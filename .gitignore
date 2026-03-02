@@ -1,0 +1,30 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Runtime logs and temp outputs
+*.log
+*_runtime*.log
+temp/
+archive/
+
+# Local environment files
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large local dataset/audio artifacts
+Data/genres_original/
+Data/images_original/
+
+# Editor/IDE
+.idea/
+.vscode/

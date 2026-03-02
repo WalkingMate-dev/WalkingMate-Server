@@ -1,0 +1,449 @@
+﻿openapi: 3.0.3
+info:
+  title: WalkingMate Music Server API
+  version: 1.0.0
+  description: |
+    Flask-based backend API for music upload, similarity lookup, BPM-based recommendation,
+    and async processing with Redis/RQ.
+servers:
+  - url: http://localhost:18080
+    description: 로컬 실행 기본 포트(start_all.ps1)
+  - url: http://localhost:5000
+    description: 직접 실행 기본 포트(server.py)
+
+tags:
+  - name: Upload
+  - name: Jobs
+  - name: Recommendation
+  - name: Playback
+
+paths:
+  /upload:
+    post:
+      tags: [Upload]
+      summary: 업로드 파일 동기 처리
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: 업로드 처리 완료(중복 포함)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/UploadSuccessResponse'
+                  - $ref: '#/components/schemas/UploadDuplicateResponse'
+        '400':
+          description: 잘못된 요청 또는 특징 추출 실패
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 추출 특징 저장 실패
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /upload_async:
+    post:
+      tags: [Upload]
+      summary: 업로드 파일 비동기 큐 등록
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '202':
+          description: 작업 큐 등록 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsyncUploadQueuedResponse'
+        '400':
+          description: 업로드 요청 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 큐 또는 Redis 사용 불가
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /jobs/{job_id}:
+    get:
+      tags: [Jobs]
+      summary: 비동기 업로드 작업 상태 조회
+      parameters:
+        - in: path
+          name: job_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 작업 상태 반환
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStatusResponse'
+        '404':
+          description: 작업을 찾을 수 없습니다
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Redis 사용 불가
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /similar_songs/{filename}:
+    get:
+      tags: [Recommendation]
+      summary: 유사 곡 파일명 조회
+      parameters:
+        - in: path
+          name: filename
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 유사 곡 파일명 목록
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '400':
+          description: 파일명 오류 또는 유사도 계산 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /similar_songs_detailed/{filename}:
+    get:
+      tags: [Recommendation]
+      summary: 유사도 상세 지표 조회
+      parameters:
+        - in: path
+          name: filename
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 유사도 상세 응답
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SimilarityItem'
+        '400':
+          description: 파일명 오류 또는 유사도 계산 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /random_music/low_bpm:
+    get:
+      tags: [Playback]
+      summary: 저 BPM 랜덤 곡 다운로드
+      responses:
+        '200':
+          description: 오디오 파일 스트림
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: 조건에 맞는 음악 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /random_music/high_bpm:
+    get:
+      tags: [Playback]
+      summary: 고 BPM 랜덤 곡 다운로드
+      responses:
+        '200':
+          description: 오디오 파일 스트림
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: 조건에 맞는 음악 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /bpm:
+    post:
+      tags: [Recommendation]
+      summary: 입력 BPM 기준 곡 선택
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [bpm]
+              properties:
+                bpm:
+                  type: number
+                  format: float
+      responses:
+        '200':
+          description: 조건에 맞는 곡 선택 완료
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BpmResponse'
+        '400':
+          description: bpm 값 누락
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 조건에 맞는 곡 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /music/{filename}:
+    get:
+      tags: [Playback]
+      summary: 특정 음악 파일 다운로드
+      parameters:
+        - in: path
+          name: filename
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 오디오 파일 스트림
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: 파일을 찾을 수 없습니다
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /download/{filename}:
+    get:
+      tags: [Playback]
+      summary: 파일 다운로드 별칭 엔드포인트
+      parameters:
+        - in: path
+          name: filename
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 오디오 파일 스트림
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: 파일을 찾을 수 없습니다
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /current_tempo:
+    get:
+      tags: [Playback]
+      summary: 현재 선택 곡 템포 조회
+      responses:
+        '200':
+          description: 현재 템포
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentTempoResponse'
+        '404':
+          description: 현재 선택된 곡 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /current_filename:
+    get:
+      tags: [Playback]
+      summary: 현재 선택 곡 파일명 조회
+      responses:
+        '200':
+          description: 현재 파일명
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentFilenameResponse'
+        '404':
+          description: 현재 선택된 곡 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        trace:
+          type: string
+      required: [error]
+
+    UploadSuccessResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: 파일 업로드 및 특징 추출이 완료되었습니다
+        filename:
+          type: string
+          example: filename123
+      required: [message, filename]
+
+    UploadDuplicateResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: 중복 업로드가 감지되었습니다
+        filename:
+          type: string
+          example: filename18
+        duplicate:
+          type: boolean
+          example: true
+      required: [message, filename, duplicate]
+
+    AsyncUploadQueuedResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          example: queued
+      required: [job_id, status]
+
+    JobStatusResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+          description: RQ 작업 상태(queued, started, finished, failed 등)
+        result:
+          type: object
+          additionalProperties: true
+        error:
+          type: string
+      required: [job_id, status]
+
+    BpmResponse:
+      type: object
+      properties:
+        file_title:
+          type: string
+      required: [file_title]
+
+    CurrentTempoResponse:
+      type: object
+      properties:
+        tempo:
+          type: number
+          format: float
+      required: [tempo]
+
+    CurrentFilenameResponse:
+      type: object
+      properties:
+        filename:
+          type: string
+      required: [filename]
+
+    SimilarityItem:
+      type: object
+      properties:
+        filename:
+          type: string
+        similarity_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        tempo_similarity_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        energy_similarity_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        brightness_similarity_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        rhythm_similarity_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+      required:
+        - filename
+        - similarity_percent
+        - tempo_similarity_percent
+        - energy_similarity_percent
+        - brightness_similarity_percent
+        - rhythm_similarity_percent
