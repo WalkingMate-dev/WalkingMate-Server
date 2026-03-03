@@ -121,9 +121,9 @@ jobs:
             # user_data가 반영되지 않았거나 신규 인스턴스인 경우도 배포가 가능하도록 보정
             if ! command -v docker >/dev/null 2>&1; then
               if command -v dnf >/dev/null 2>&1; then
-                dnf install -y docker git curl
+                dnf install -y docker git
               elif command -v yum >/dev/null 2>&1; then
-                yum install -y docker git curl
+                yum install -y docker git
               else
                 echo "지원되지 않는 패키지 매니저: docker 설치 불가"
                 exit 1
