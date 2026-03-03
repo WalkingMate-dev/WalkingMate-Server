@@ -15,7 +15,7 @@ WalkingMate 프로젝트의 백엔드 서버 레포지토리입니다.
 - 비동기 처리: Redis Queue + RQ Worker
 - 저장소:
   - 메타/특징: `Data/features_30_sec.csv`
-  - 음원 파일: 로컬 파일(`Data/genres_original`, 레포 제외 권장)
+  - 음원 파일: 로컬 파일(`Data/genres_original`, 레포 제외 권장) 또는 S3(`STORAGE_MODE=s3`)
 
 ## 실행 방법 (Windows, PowerShell)
 ```powershell
@@ -69,6 +69,14 @@ docker compose up -d --build
 MySQL 사용:
 - `MYSQL_ENABLED=1`이면 업로드 결과 메타를 `upload_history` 테이블에 저장
 - `MYSQL_ENABLED=0`이면 기존 CSV 기반만 사용
+
+S3 음원 사용(EC2 단독 운영):
+- `STORAGE_MODE=s3`
+- `S3_BUCKET=<버킷명>`
+- `S3_PREFIX=genres_original` (기본값)
+- `S3_REGION=ap-northeast-2`
+- `S3_ENDPOINT_URL=` (AWS S3 기본 엔드포인트 사용 시 비움)
+- 컨테이너 실행 IAM 권한(또는 AWS 키)에 `s3:GetObject`, `s3:ListBucket` 필요
 
 ## GitHub Actions 시크릿
 `deploy.yml` 실행 전에 아래 시크릿을 저장합니다.

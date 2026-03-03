@@ -1,11 +1,10 @@
-﻿import os
+import os
 import uuid
 
 from flask import Blueprint, jsonify, request, send_file
 from redis.exceptions import RedisError
 from rq.exceptions import NoSuchJobError
 
-from music_server.services.runtime_infra import fetch_job, get_queue
 from music_server.services.recommendation import (
     build_similarity_payload,
     find_similar_songs,
@@ -14,10 +13,20 @@ from music_server.services.recommendation import (
     pick_song_by_bpm_value,
     resolve_music_file_path,
 )
+from music_server.services.runtime_infra import fetch_job, get_queue
+from music_server.services.storage import load_music_bytes
 from music_server.services.uploads import process_upload, save_upload_to_temp
 from music_server.state import get_current_song_info, mark_current_song
 
 music_bp = Blueprint('music', __name__)
+
+
+def _send_music(location, filename):
+    try:
+        payload = load_music_bytes(location)
+    except FileNotFoundError:
+        return jsonify({'error': '파일을 찾을 수 없습니다'}), 404
+    return send_file(payload, as_attachment=True, download_name=filename)
 
 
 # 업로드 파일 즉시 분석 및 특징값 저장
@@ -103,7 +112,7 @@ def get_low_bpm_music():
         return jsonify(error_payload), status
 
     mark_current_song(song['file_name'], song['genre'], song['tempo'])
-    return send_file(song['file_path'], as_attachment=True, download_name=song['file_name'])
+    return _send_music(song['file_path'], song['file_name'])
 
 
 # 고 BPM 그룹 랜덤 곡 선택 및 파일 응답
@@ -115,7 +124,7 @@ def get_high_bpm_music():
         return jsonify(error_payload), status
 
     mark_current_song(song['file_name'], song['genre'], song['tempo'])
-    return send_file(song['file_path'], as_attachment=True, download_name=song['file_name'])
+    return _send_music(song['file_path'], song['file_name'])
 
 
 # 입력 BPM 기준 곡 1개 선택
@@ -138,7 +147,7 @@ def bpm_route():
 def music_file(filename):
     file_path, _ = resolve_music_file_path(filename)
     if file_path:
-        return send_file(file_path, as_attachment=True, download_name=filename)
+        return _send_music(file_path, filename)
     return jsonify({'error': '파일을 찾을 수 없습니다'}), 404
 
 
@@ -165,11 +174,11 @@ def get_current_filename():
 def download_file(filename):
     file_path, _ = resolve_music_file_path(filename)
     if file_path:
-        return send_file(file_path, as_attachment=True, download_name=filename)
+        return _send_music(file_path, filename)
     return jsonify({'error': '파일을 찾을 수 없습니다'}), 404
+
 
 # 서버 상태 확인
 @music_bp.route('/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'ok'}), 200
-

@@ -9,3 +9,4 @@ scikit-learn
 librosa
 soundfile
 pymysql
+boto3

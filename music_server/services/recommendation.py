@@ -5,27 +5,9 @@ import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import scale
 
-from music_server.config import BPM_THRESHOLD1, BPM_THRESHOLD2, FEATURES_FILE, MUSIC_FOLDER, VALID_GENRES
+from music_server.config import BPM_THRESHOLD1, BPM_THRESHOLD2, FEATURES_FILE, VALID_GENRES
 from music_server.services.runtime_infra import features_file_lock
-
-
-# 파일명 기준 실제 음악 파일 경로/장르 탐색
-def resolve_music_file_path(filename):
-    if not filename:
-        return None, None
-
-    inferred_genre = filename.split('.')[0] if '.' in filename else ''
-    if inferred_genre in VALID_GENRES:
-        direct = os.path.join(MUSIC_FOLDER, inferred_genre, filename)
-        if os.path.exists(direct):
-            return direct, inferred_genre
-
-    for root, _, files in os.walk(MUSIC_FOLDER):
-        if filename in files:
-            genre = os.path.basename(root)
-            return os.path.join(root, filename), genre
-
-    return None, None
+from music_server.services.storage import get_available_music_filenames, resolve_music_file_path
 
 
 # 특징 CSV 기반 저/고 BPM 그룹 구성
@@ -38,6 +20,9 @@ def get_bpm_groups():
 
     features_df = features_df.dropna(subset=['filename', 'label', 'tempo', 'rms_mean'])
     features_df = features_df[features_df['label'].isin(VALID_GENRES)]
+    available_names = get_available_music_filenames()
+    if available_names:
+        features_df = features_df[features_df['filename'].isin(available_names)]
 
     low_bpm_songs = features_df[
         (features_df['tempo'] <= BPM_THRESHOLD1) &
@@ -62,11 +47,9 @@ def pick_random_song_by_group(bpm_songs):
     file_name = str(selected_song['filename'])
     tempo = selected_song['tempo']
 
-    file_path = os.path.join(MUSIC_FOLDER, genre, file_name)
-    if not os.path.exists(file_path):
-        file_path, genre = resolve_music_file_path(file_name)
-        if file_path is None:
-            return None, {'error': f'음악 파일을 찾을 수 없습니다: {file_name}'}, 404
+    file_path, genre = resolve_music_file_path(file_name)
+    if file_path is None:
+        return None, {'error': f'음악 파일을 찾을 수 없습니다: {file_name}'}, 404
 
     return {
         'file_name': file_name,
@@ -89,11 +72,9 @@ def pick_song_by_bpm_value(bpm_value):
     genre = str(selected_song['label'])
     tempo = selected_song['tempo']
 
-    file_path = os.path.join(MUSIC_FOLDER, genre, file_name)
-    if not os.path.exists(file_path):
-        file_path, genre = resolve_music_file_path(file_name)
-        if file_path is None:
-            return None, {'error': '선택된 음악 파일을 찾을 수 없습니다'}, 404
+    file_path, genre = resolve_music_file_path(file_name)
+    if file_path is None:
+        return None, {'error': '선택된 음악 파일을 찾을 수 없습니다'}, 404
 
     return {
         'file_name': file_name,

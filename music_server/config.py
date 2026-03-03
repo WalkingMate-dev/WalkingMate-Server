@@ -4,6 +4,11 @@ import tempfile
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MUSIC_FOLDER = os.path.join(BASE_DIR, 'Data', 'genres_original')
 FEATURES_FILE = os.path.join(BASE_DIR, 'Data', 'features_30_sec.csv')
+STORAGE_MODE = os.getenv('STORAGE_MODE', 'local').strip().lower()
+S3_BUCKET = os.getenv('S3_BUCKET', '').strip()
+S3_PREFIX = os.getenv('S3_PREFIX', 'genres_original').strip().strip('/')
+S3_REGION = os.getenv('S3_REGION', '').strip() or None
+S3_ENDPOINT_URL = os.getenv('S3_ENDPOINT_URL', '').strip() or None
 
 
 def _resolve_temp_folder():
