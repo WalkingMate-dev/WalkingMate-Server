@@ -334,14 +334,19 @@ jobs:
 
           echo "SSM CommandId: $COMMAND_ID"
 
-          # 실제 원격 실행 완료까지 대기
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${INSTANCE_ID}" || true
-
-          STATUS=$(aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "${INSTANCE_ID}" \
-            --query "Status" \
-            --output text)
+          # 실제 원격 실행 완료까지 충분히 대기 (Pending 길어지는 경우 대비)
+          STATUS="Pending"
+          for i in $(seq 1 120); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "${INSTANCE_ID}" \
+              --query "Status" \
+              --output text 2>/dev/null || echo "Pending")
+            if [ "$STATUS" != "Pending" ] && [ "$STATUS" != "InProgress" ] && [ "$STATUS" != "Delayed" ]; then
+              break
+            fi
+            sleep 5
+          done
 
           echo "SSM 실행 상태: $STATUS"
           echo "----- SSM STDOUT (tail) -----"
