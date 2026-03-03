@@ -185,9 +185,20 @@ jobs:
                 -e MYSQL_USER="$(get_env_value MYSQL_USER_INIT)" \
                 -e MYSQL_PASSWORD="$(get_env_value MYSQL_PASSWORD_INIT)" \
                 -v /opt/walkingmate/mysql_data:/var/lib/mysql \
-                mysql:8.4 --default-authentication-plugin=mysql_native_password
+                mysql:8.4
             elif ! docker ps --format '{{.Names}}' | grep -Fxq "$MYSQL_NAME"; then
-              docker start "$MYSQL_NAME"
+              docker rm -f "$MYSQL_NAME" 2>/dev/null || true
+              docker run -d \
+                --name "$MYSQL_NAME" \
+                --restart unless-stopped \
+                --network "$NETWORK" \
+                --env-file "$ENV_FILE" \
+                -e MYSQL_ROOT_PASSWORD="$(get_env_value MYSQL_ROOT_PASSWORD)" \
+                -e MYSQL_DATABASE="$(get_env_value MYSQL_DATABASE_INIT)" \
+                -e MYSQL_USER="$(get_env_value MYSQL_USER_INIT)" \
+                -e MYSQL_PASSWORD="$(get_env_value MYSQL_PASSWORD_INIT)" \
+                -v /opt/walkingmate/mysql_data:/var/lib/mysql \
+                mysql:8.4
             fi
 
             wait_mysql() {
