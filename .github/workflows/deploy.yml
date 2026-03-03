@@ -175,6 +175,13 @@ jobs:
             fi
 
             # 옵션/이미지 변경사항을 확실히 반영하기 위해 MySQL 컨테이너는 항상 재생성한다.
+            mkdir -p /opt/walkingmate/mysql_data
+            # 초기화 중단으로 mysql 시스템 테이블이 비정상인 경우 자동 정리 후 재초기화
+            if [ -d /opt/walkingmate/mysql_data/mysql ] && [ ! -f /opt/walkingmate/mysql_data/mysql/user.ibd ]; then
+              echo "손상된 MySQL 데이터 디렉터리 감지, 초기화 후 재생성합니다."
+              rm -rf /opt/walkingmate/mysql_data/*
+            fi
+
             docker rm -f "$MYSQL_NAME" 2>/dev/null || true
             docker run -d \
               --name "$MYSQL_NAME" \
