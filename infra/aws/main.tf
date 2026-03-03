@@ -65,6 +65,13 @@ resource "aws_security_group" "server" {
   description = "WalkingMate server security group"
   vpc_id      = aws_vpc.this.id
 
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = var.ssh_ingress_cidrs
+  }
 
   ingress {
     description = "WalkingMate API"
@@ -119,11 +126,18 @@ locals {
 set -e
 
 dnf update -y
-dnf install -y docker git
+dnf install -y docker git curl
 systemctl enable docker
 systemctl start docker
 
-mkdir -p /opt/walkingmate
+mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp /opt/walkingmate/haproxy /opt/walkingmate/mysql_data
+chown -R ec2-user:ec2-user /opt/walkingmate
+
+# docker compose 플러그인이 없는 환경 대비(standalone 설치)
+if [ ! -x /usr/local/bin/docker-compose ]; then
+  curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
+  chmod +x /usr/local/bin/docker-compose
+fi
 EOT
 }
 

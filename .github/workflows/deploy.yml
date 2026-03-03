@@ -111,11 +111,33 @@ jobs:
             ENV_FILE="/opt/walkingmate/.env"
             APP_DIR="/opt/walkingmate"
 
+            systemctl enable --now docker >/dev/null 2>&1 || true
             mkdir -p "$APP_DIR" "$APP_DIR/Data" "$APP_DIR/temp" "$APP_DIR/haproxy"
 
-            cat > "$ENV_FILE" <<'EOF_ENV'
+            cat > "${ENV_FILE}.raw" <<'EOF_ENV'
             ${{ secrets.WALKINGMATE_ENV }}
             EOF_ENV
+            # 시크릿 값이 들여쓰기/CRLF로 저장된 경우를 정리한다.
+            sed -e 's/\r$//' -e 's/^[[:space:]]*//' "${ENV_FILE}.raw" > "$ENV_FILE"
+            rm -f "${ENV_FILE}.raw"
+
+            require_env_key() {
+              local key="$1"
+              if ! grep -q "^${key}=" "$ENV_FILE"; then
+                echo "필수 환경변수 누락: ${key}"
+                exit 1
+              fi
+            }
+
+            get_env_value() {
+              local key="$1"
+              awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+            }
+
+            require_env_key MYSQL_ROOT_PASSWORD
+            require_env_key MYSQL_DATABASE_INIT
+            require_env_key MYSQL_USER_INIT
+            require_env_key MYSQL_PASSWORD_INIT
 
             docker network create "$NETWORK" >/dev/null 2>&1 || true
 
@@ -133,10 +155,10 @@ jobs:
                 --restart unless-stopped \
                 --network "$NETWORK" \
                 --env-file "$ENV_FILE" \
-                -e MYSQL_ROOT_PASSWORD="$(grep '^MYSQL_ROOT_PASSWORD=' "$ENV_FILE" | cut -d'=' -f2-)" \
-                -e MYSQL_DATABASE="$(grep '^MYSQL_DATABASE_INIT=' "$ENV_FILE" | cut -d'=' -f2-)" \
-                -e MYSQL_USER="$(grep '^MYSQL_USER_INIT=' "$ENV_FILE" | cut -d'=' -f2-)" \
-                -e MYSQL_PASSWORD="$(grep '^MYSQL_PASSWORD_INIT=' "$ENV_FILE" | cut -d'=' -f2-)" \
+                -e MYSQL_ROOT_PASSWORD="$(get_env_value MYSQL_ROOT_PASSWORD)" \
+                -e MYSQL_DATABASE="$(get_env_value MYSQL_DATABASE_INIT)" \
+                -e MYSQL_USER="$(get_env_value MYSQL_USER_INIT)" \
+                -e MYSQL_PASSWORD="$(get_env_value MYSQL_PASSWORD_INIT)" \
                 -v /opt/walkingmate/mysql_data:/var/lib/mysql \
                 mysql:8.4 --default-authentication-plugin=mysql_native_password
             elif ! docker ps --format '{{.Names}}' | grep -Fxq "$MYSQL_NAME"; then
@@ -146,7 +168,7 @@ jobs:
             wait_mysql() {
               local i=0
               local root_pw
-              root_pw="$(grep '^MYSQL_ROOT_PASSWORD=' "$ENV_FILE" | cut -d'=' -f2-)"
+              root_pw="$(get_env_value MYSQL_ROOT_PASSWORD)"
               until docker exec "$MYSQL_NAME" mysqladmin ping -h 127.0.0.1 -uroot -p"$root_pw" >/dev/null 2>&1; do
                 i=$((i+1))
                 if [ "$i" -ge 40 ]; then

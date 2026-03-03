@@ -34,3 +34,9 @@ variable "key_name" {
   type        = string
   default     = null
 }
+
+variable "ssh_ingress_cidrs" {
+  description = "SSH(22) 인바운드를 허용할 CIDR 목록 (예: [\"203.0.113.10/32\"])"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
