@@ -174,32 +174,19 @@ jobs:
               docker run -d --name "$REDIS_NAME" --restart unless-stopped --network "$NETWORK" redis:7-alpine
             fi
 
-            if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$MYSQL_NAME"; then
-              docker run -d \
-                --name "$MYSQL_NAME" \
-                --restart unless-stopped \
-                --network "$NETWORK" \
-                --env-file "$ENV_FILE" \
-                -e MYSQL_ROOT_PASSWORD="$(get_env_value MYSQL_ROOT_PASSWORD)" \
-                -e MYSQL_DATABASE="$(get_env_value MYSQL_DATABASE_INIT)" \
-                -e MYSQL_USER="$(get_env_value MYSQL_USER_INIT)" \
-                -e MYSQL_PASSWORD="$(get_env_value MYSQL_PASSWORD_INIT)" \
-                -v /opt/walkingmate/mysql_data:/var/lib/mysql \
-                mysql:8.4
-            elif ! docker ps --format '{{.Names}}' | grep -Fxq "$MYSQL_NAME"; then
-              docker rm -f "$MYSQL_NAME" 2>/dev/null || true
-              docker run -d \
-                --name "$MYSQL_NAME" \
-                --restart unless-stopped \
-                --network "$NETWORK" \
-                --env-file "$ENV_FILE" \
-                -e MYSQL_ROOT_PASSWORD="$(get_env_value MYSQL_ROOT_PASSWORD)" \
-                -e MYSQL_DATABASE="$(get_env_value MYSQL_DATABASE_INIT)" \
-                -e MYSQL_USER="$(get_env_value MYSQL_USER_INIT)" \
-                -e MYSQL_PASSWORD="$(get_env_value MYSQL_PASSWORD_INIT)" \
-                -v /opt/walkingmate/mysql_data:/var/lib/mysql \
-                mysql:8.4
-            fi
+            # 옵션/이미지 변경사항을 확실히 반영하기 위해 MySQL 컨테이너는 항상 재생성한다.
+            docker rm -f "$MYSQL_NAME" 2>/dev/null || true
+            docker run -d \
+              --name "$MYSQL_NAME" \
+              --restart unless-stopped \
+              --network "$NETWORK" \
+              --env-file "$ENV_FILE" \
+              -e MYSQL_ROOT_PASSWORD="$(get_env_value MYSQL_ROOT_PASSWORD)" \
+              -e MYSQL_DATABASE="$(get_env_value MYSQL_DATABASE_INIT)" \
+              -e MYSQL_USER="$(get_env_value MYSQL_USER_INIT)" \
+              -e MYSQL_PASSWORD="$(get_env_value MYSQL_PASSWORD_INIT)" \
+              -v /opt/walkingmate/mysql_data:/var/lib/mysql \
+              mysql:8.4
 
             wait_mysql() {
               local i=0
