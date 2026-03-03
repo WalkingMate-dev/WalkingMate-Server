@@ -106,6 +106,25 @@ jobs:
             --output table
           echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
 
+      - name: SSM 연결 상태 대기
+        shell: bash
+        run: |
+          STATUS="Unknown"
+          for i in $(seq 1 60); do
+            STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+              --query "InstanceInformationList[0].PingStatus" \
+              --output text 2>/dev/null || echo "Unknown")
+            if [ "$STATUS" = "Online" ]; then
+              echo "SSM PingStatus=Online"
+              exit 0
+            fi
+            echo "SSM PingStatus=$STATUS (재시도 $i/60)"
+            sleep 5
+          done
+          echo "SSM이 Online 상태가 아닙니다. 현재 상태: $STATUS"
+          exit 1
+
       - name: AWS SSM 실행(대기/실패전파)
         shell: bash
         run: |
