@@ -308,7 +308,7 @@ jobs:
 
           command -v jq >/dev/null 2>&1 || { echo "jq not found on runner"; exit 1; }
 
-          COMMANDS_JSON=$(printf '%s\n' "$COMMANDS" | jq -R . | jq -s .)
+          COMMANDS_JSON=$(jq -cn --arg script "$COMMANDS" '[$script]')
           REQUEST_JSON=$(jq -n \
             --arg instance_id "${INSTANCE_ID}" \
             --arg comment "WalkingMate Blue-Green Deploy" \
