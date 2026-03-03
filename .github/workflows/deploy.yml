@@ -109,6 +109,7 @@ jobs:
       - name: AWS SSM 실행(대기/실패전파)
         shell: bash
         run: |
+          WALKINGMATE_ENV_B64="$(printf '%s' '${{ secrets.WALKINGMATE_ENV }}' | base64 -w 0)"
           COMMANDS=$(cat <<'EOF_SCRIPT'
             set -euo pipefail
 
@@ -140,9 +141,7 @@ jobs:
             command -v docker >/dev/null 2>&1 || { echo "docker 설치/실행 실패"; exit 1; }
             mkdir -p "$APP_DIR" "$APP_DIR/Data" "$APP_DIR/temp" "$APP_DIR/haproxy"
 
-            cat > "${ENV_FILE}.raw" <<'EOF_ENV'
-            ${{ secrets.WALKINGMATE_ENV }}
-            EOF_ENV
+            printf '%s' '__WALKINGMATE_ENV_B64__' | base64 -d > "${ENV_FILE}.raw"
             # 시크릿 값이 들여쓰기/CRLF로 저장된 경우를 정리한다.
             sed -e 's/\r$//' -e 's/^[[:space:]]*//' "${ENV_FILE}.raw" > "$ENV_FILE"
             rm -f "${ENV_FILE}.raw"
@@ -312,6 +311,7 @@ jobs:
             echo "배포 완료: 활성 컨테이너=$NEXT, 포트=$NEXT_PORT"
           EOF_SCRIPT
           )
+          COMMANDS="$(printf '%s' "$COMMANDS" | sed "s|__WALKINGMATE_ENV_B64__|$WALKINGMATE_ENV_B64|g")"
 
           command -v jq >/dev/null 2>&1 || { echo "jq not found on runner"; exit 1; }
 
