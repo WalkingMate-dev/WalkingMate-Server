@@ -1,0 +1,266 @@
+﻿name: deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/**'
+      - 'music_server/**'
+      - 'server.py'
+      - 'run_worker.py'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'deploy/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  buildImageAndPush:
+    name: 도커 이미지 빌드 및 푸시
+    runs-on: ubuntu-latest
+    outputs:
+      owner_lc: ${{ steps.export_owner.outputs.owner_lc }}
+      image_name: ${{ steps.export_image.outputs.image_name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 레지스트리 로그인
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 소유자 소문자 변환
+        id: export_owner
+        shell: bash
+        run: |
+          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "owner_lc=$OWNER_LC" >> "$GITHUB_OUTPUT"
+
+      - name: 이미지 이름 설정
+        id: export_image
+        run: echo "image_name=walkingmate-server" >> "$GITHUB_OUTPUT"
+
+      - name: 빌드 및 푸시
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.export_owner.outputs.owner_lc }}/${{ steps.export_image.outputs.image_name }}:latest
+
+  deploy:
+    name: AWS SSM 블루그린 배포
+    needs: [buildImageAndPush]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ secrets.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: EC2 인스턴스 ID 조회
+        id: get_instance_id
+        shell: bash
+        run: |
+          INSTANCE_ID=$(aws ec2 describe-instances --filters \
+            "Name=tag:Name,Values=walkingmate-ec2" \
+            "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].InstanceId" --output text)
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "실행 중인 인스턴스를 찾지 못했습니다"
+            exit 1
+          fi
+          echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
+
+      - name: AWS SSM Send-Command
+        uses: peterkimzz/aws-ssm-send-command@master
+        with:
+          aws-region: ${{ secrets.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          instance-ids: ${{ env.INSTANCE_ID }}
+          working-directory: /
+          comment: WalkingMate Blue-Green Deploy
+          command: |
+            set -euo pipefail
+
+            IMAGE="ghcr.io/${{ needs.buildImageAndPush.outputs.owner_lc }}/${{ needs.buildImageAndPush.outputs.image_name }}:latest"
+            NETWORK="common"
+            APP_BLUE="walkingmate_app_blue"
+            APP_GREEN="walkingmate_app_green"
+            APP_BLUE_PORT=28080
+            APP_GREEN_PORT=28081
+            WORKER_NAME="walkingmate_worker"
+            REDIS_NAME="walkingmate_redis"
+            MYSQL_NAME="walkingmate_mysql"
+            PROXY_NAME="walkingmate_haproxy"
+            ENV_FILE="/opt/walkingmate/.env"
+            APP_DIR="/opt/walkingmate"
+
+            mkdir -p "$APP_DIR" "$APP_DIR/Data" "$APP_DIR/temp" "$APP_DIR/haproxy"
+
+            cat > "$ENV_FILE" <<'EOF_ENV'
+            ${{ secrets.WALKINGMATE_ENV }}
+            EOF_ENV
+
+            docker network create "$NETWORK" >/dev/null 2>&1 || true
+
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
+            docker pull "$IMAGE"
+            DIGEST=$(docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}')
+
+            if ! docker ps --format '{{.Names}}' | grep -Fxq "$REDIS_NAME"; then
+              docker run -d --name "$REDIS_NAME" --restart unless-stopped --network "$NETWORK" redis:7-alpine
+            fi
+
+            if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$MYSQL_NAME"; then
+              docker run -d \
+                --name "$MYSQL_NAME" \
+                --restart unless-stopped \
+                --network "$NETWORK" \
+                --env-file "$ENV_FILE" \
+                -e MYSQL_ROOT_PASSWORD="$(grep '^MYSQL_ROOT_PASSWORD=' "$ENV_FILE" | cut -d'=' -f2-)" \
+                -e MYSQL_DATABASE="$(grep '^MYSQL_DATABASE_INIT=' "$ENV_FILE" | cut -d'=' -f2-)" \
+                -e MYSQL_USER="$(grep '^MYSQL_USER_INIT=' "$ENV_FILE" | cut -d'=' -f2-)" \
+                -e MYSQL_PASSWORD="$(grep '^MYSQL_PASSWORD_INIT=' "$ENV_FILE" | cut -d'=' -f2-)" \
+                -v /opt/walkingmate/mysql_data:/var/lib/mysql \
+                mysql:8.4 --default-authentication-plugin=mysql_native_password
+            elif ! docker ps --format '{{.Names}}' | grep -Fxq "$MYSQL_NAME"; then
+              docker start "$MYSQL_NAME"
+            fi
+
+            wait_mysql() {
+              local i=0
+              local root_pw
+              root_pw="$(grep '^MYSQL_ROOT_PASSWORD=' "$ENV_FILE" | cut -d'=' -f2-)"
+              until docker exec "$MYSQL_NAME" mysqladmin ping -h 127.0.0.1 -uroot -p"$root_pw" >/dev/null 2>&1; do
+                i=$((i+1))
+                if [ "$i" -ge 40 ]; then
+                  echo "MySQL 준비 실패"
+                  exit 1
+                fi
+                sleep 3
+              done
+            }
+            wait_mysql
+
+            HAS_BLUE=$(docker ps --format '{{.Names}}' | grep -Fx "$APP_BLUE" || true)
+            HAS_GREEN=$(docker ps --format '{{.Names}}' | grep -Fx "$APP_GREEN" || true)
+
+            if [ -n "$HAS_BLUE" ] && [ -z "$HAS_GREEN" ]; then
+              CURRENT="$APP_BLUE"
+              NEXT="$APP_GREEN"
+              NEXT_PORT="$APP_GREEN_PORT"
+            elif [ -n "$HAS_GREEN" ] && [ -z "$HAS_BLUE" ]; then
+              CURRENT="$APP_GREEN"
+              NEXT="$APP_BLUE"
+              NEXT_PORT="$APP_BLUE_PORT"
+            else
+              CURRENT=""
+              NEXT="$APP_BLUE"
+              NEXT_PORT="$APP_BLUE_PORT"
+            fi
+
+            docker stop "$NEXT" 2>/dev/null || true
+            docker rm "$NEXT" 2>/dev/null || true
+
+            docker run -d \
+              --name "$NEXT" \
+              --restart unless-stopped \
+              --network "$NETWORK" \
+              --env-file "$ENV_FILE" \
+              -p "$NEXT_PORT":18080 \
+              -v /opt/walkingmate/Data:/app/Data \
+              -v /opt/walkingmate/temp:/app/temp \
+              "$DIGEST"
+
+            wait_http() {
+              local port="$1"
+              local path="$2"
+              local timeout="$3"
+              local start elapsed
+              start=$(date +%s)
+              while true; do
+                if curl -fsS "http://127.0.0.1:${port}${path}" >/dev/null; then
+                  return 0
+                fi
+                elapsed=$(( $(date +%s) - start ))
+                if [ "$elapsed" -ge "$timeout" ]; then
+                  return 1
+                fi
+                sleep 3
+              done
+            }
+
+            if ! wait_http "$NEXT_PORT" "/health" 120; then
+              echo "새 컨테이너 헬스체크 실패"
+              docker logs --tail=200 "$NEXT" || true
+              exit 1
+            fi
+
+            cat > /opt/walkingmate/haproxy/haproxy.cfg <<'EOF_HAPROXY'
+            global
+              log stdout format raw local0
+
+            defaults
+              mode http
+              option httplog
+              timeout connect 5s
+              timeout client 60s
+              timeout server 60s
+
+            frontend wm_front
+              bind *:18080
+              default_backend wm_back
+
+            backend wm_back
+              balance roundrobin
+              option httpchk GET /health
+              server wm_blue walkingmate_app_blue:18080 check
+              server wm_green walkingmate_app_green:18080 check
+            EOF_HAPROXY
+
+            docker rm -f "$PROXY_NAME" 2>/dev/null || true
+            docker run -d \
+              --name "$PROXY_NAME" \
+              --restart unless-stopped \
+              --network "$NETWORK" \
+              -p 18080:18080 \
+              -v /opt/walkingmate/haproxy:/usr/local/etc/haproxy \
+              haproxy:3.0
+
+            docker stop "$WORKER_NAME" 2>/dev/null || true
+            docker rm "$WORKER_NAME" 2>/dev/null || true
+            docker run -d \
+              --name "$WORKER_NAME" \
+              --restart unless-stopped \
+              --network "$NETWORK" \
+              --env-file "$ENV_FILE" \
+              -v /opt/walkingmate/Data:/app/Data \
+              -v /opt/walkingmate/temp:/app/temp \
+              "$DIGEST" \
+              python run_worker.py
+
+            if [ -n "$CURRENT" ]; then
+              docker stop "$CURRENT" 2>/dev/null || true
+              docker rm "$CURRENT" 2>/dev/null || true
+            fi
+
+            docker image prune -f >/dev/null 2>&1 || true
+            echo "배포 완료: 활성 컨테이너=$NEXT, 포트=$NEXT_PORT"
+
+

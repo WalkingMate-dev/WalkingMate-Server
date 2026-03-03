@@ -1,7 +1,7 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
-$root = 'C:\androidApp\server'
-$python = 'C:\androidApp\server\.venv\Scripts\python.exe'
+$root = 'C:\PortfolioProject\server'
+$python = 'C:\PortfolioProject\server\.venv\Scripts\python.exe'
 $serverOut = Join-Path $root '_server_runtime.out.log'
 $serverErr = Join-Path $root '_server_runtime.err.log'
 $workerOut = Join-Path $root '_worker_runtime.out.log'
@@ -37,7 +37,7 @@ if (-not $env:REDIS_URL) { $env:REDIS_URL = 'redis://127.0.0.1:6379/0' }
 $redisReachable = $false
 $oldErrorPreference = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
-& $python -B -c "from music_server.services.infra import ping_redis; ping_redis()" *> $null
+& $python -B -c "from music_server.services.runtime_infra import ping_redis; ping_redis()" *> $null
 if ($LASTEXITCODE -eq 0) { $redisReachable = $true }
 $ErrorActionPreference = $oldErrorPreference
 
@@ -48,8 +48,8 @@ if (-not $redisReachable) {
     exit 1
 }
 
-Start-Process -FilePath $python -ArgumentList 'C:\androidApp\server\server.py' -WorkingDirectory $root -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr
-Start-Process -FilePath $python -ArgumentList 'C:\androidApp\server\run_worker.py' -WorkingDirectory $root -RedirectStandardOutput $workerOut -RedirectStandardError $workerErr
+Start-Process -FilePath $python -ArgumentList 'C:\PortfolioProject\server\server.py' -WorkingDirectory $root -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr
+Start-Process -FilePath $python -ArgumentList 'C:\PortfolioProject\server\run_worker.py' -WorkingDirectory $root -RedirectStandardOutput $workerOut -RedirectStandardError $workerErr
 
 Start-Sleep -Seconds 2
 
@@ -66,3 +66,4 @@ Write-Host ''
 Write-Host '=== Tailing logs (Ctrl+C to stop tail only) ==='
 Get-Content -Path $serverOut, $serverErr, $workerOut, $workerErr -Wait
 Pop-Location
+

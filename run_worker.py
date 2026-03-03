@@ -1,10 +1,10 @@
-import os
+﻿import os
 
 from redis.exceptions import RedisError
 from rq import SimpleWorker, Worker
 
 from music_server.config import RQ_QUEUE_NAME
-from music_server.services.infra import get_redis_connection
+from music_server.services.runtime_infra import get_redis_connection
 
 
 # 운영체제/환경변수 기준 Worker 구현체 선택
@@ -32,3 +32,4 @@ if __name__ == '__main__':
         run_worker()
     except RedisError as exc:
         raise SystemExit(f'Redis 연결에 실패했습니다: {exc}')
+

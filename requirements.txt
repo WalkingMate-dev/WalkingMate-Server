@@ -1,0 +1,11 @@
+﻿flask
+flask-cors
+waitress
+redis
+rq
+numpy
+pandas
+scikit-learn
+librosa
+soundfile
+pymysql

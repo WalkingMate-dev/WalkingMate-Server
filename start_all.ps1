@@ -1,6 +1,6 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
-$root = 'C:\androidApp\server'
+$root = 'C:\PortfolioProject\server'
 $python = Join-Path $root '.venv\Scripts\python.exe'
 $redisScript = Join-Path $root 'run_redis_docker.ps1'
 $appScript = Join-Path $root 'run_both_with_logs.ps1'
@@ -23,7 +23,7 @@ if (-not (Test-Path $python)) {
 Write-Host '[1/2] Checking Redis availability...' -ForegroundColor Cyan
 $redisReachable = $false
 try {
-    & $python -B -c "from music_server.services.infra import ping_redis; ping_redis()" *> $null
+    & $python -B -c "from music_server.services.runtime_infra import ping_redis; ping_redis()" *> $null
     if ($LASTEXITCODE -eq 0) { $redisReachable = $true }
 } catch {
     $redisReachable = $false
@@ -42,3 +42,4 @@ if (-not $redisReachable) {
 
 Write-Host '[2/2] Starting API server + worker...' -ForegroundColor Cyan
 powershell -ExecutionPolicy Bypass -File $appScript
+

@@ -1,11 +1,11 @@
-import os
+﻿import os
 import uuid
 
 from flask import Blueprint, jsonify, request, send_file
 from redis.exceptions import RedisError
 from rq.exceptions import NoSuchJobError
 
-from music_server.services.infra import fetch_job, get_queue
+from music_server.services.runtime_infra import fetch_job, get_queue
 from music_server.services.recommendation import (
     build_similarity_payload,
     find_similar_songs,
@@ -167,3 +167,9 @@ def download_file(filename):
     if file_path:
         return send_file(file_path, as_attachment=True, download_name=filename)
     return jsonify({'error': '파일을 찾을 수 없습니다'}), 404
+
+# 서버 상태 확인
+@music_bp.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({'status': 'ok'}), 200
+

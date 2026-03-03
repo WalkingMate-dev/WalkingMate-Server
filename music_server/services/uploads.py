@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import json
 import os
 import subprocess
@@ -14,7 +14,8 @@ import pandas as pd
 from werkzeug.utils import secure_filename
 
 from music_server.config import FEATURES_FILE, FEATURE_COLUMNS, TEMP_FOLDER
-from music_server.services.infra import features_file_lock
+from music_server.services.db import save_upload_record
+from music_server.services.runtime_infra import features_file_lock
 
 
 # numba 데코레이터 no-op 대체
@@ -202,6 +203,7 @@ def process_uploaded_file(file_path, cleanup=True):
         features = extract_features(file_path)
     except Exception as exc:
         detail = str(exc) or repr(exc)
+        save_upload_record(file_hash, None, False, 'feature_error')
         return {
             'error': f'특징 추출에 실패했습니다: {detail}',
             'trace': traceback.format_exc(limit=3),
@@ -215,6 +217,7 @@ def process_uploaded_file(file_path, cleanup=True):
                 duplicate_rows = existing_df[existing_df['source_hash'] == file_hash]
                 if not duplicate_rows.empty:
                     existing_filename = str(duplicate_rows.iloc[0]['filename'])
+                    save_upload_record(file_hash, existing_filename, True, 'duplicate')
                     return {
                         'message': '중복 업로드가 감지되었습니다',
                         'filename': existing_filename,
@@ -228,8 +231,10 @@ def process_uploaded_file(file_path, cleanup=True):
 
             updated_df = pd.concat([existing_df, pd.DataFrame([new_data])], ignore_index=True)
             _atomic_write_features(updated_df)
+            save_upload_record(file_hash, next_filename, False, 'saved')
             return {'message': '파일 업로드 및 특징 추출이 완료되었습니다', 'filename': next_filename}, 200
     except Exception as exc:
+        save_upload_record(file_hash, None, False, 'storage_error')
         return {'error': f'특징 저장에 실패했습니다: {str(exc)}'}, 500
     finally:
         if cleanup:
@@ -286,3 +291,4 @@ def process_upload_job(file_path):
             raise RuntimeError(f'{detail}\n{trace}')
         raise RuntimeError(detail)
     return payload
+

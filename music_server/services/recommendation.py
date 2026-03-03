@@ -1,4 +1,4 @@
-import os
+﻿import os
 
 import numpy as np
 import pandas as pd
@@ -6,7 +6,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import scale
 
 from music_server.config import BPM_THRESHOLD1, BPM_THRESHOLD2, FEATURES_FILE, MUSIC_FOLDER, VALID_GENRES
-from music_server.services.infra import features_file_lock
+from music_server.services.runtime_infra import features_file_lock
 
 
 # 파일명 기준 실제 음악 파일 경로/장르 탐색
@@ -232,3 +232,4 @@ def build_similarity_payload(result_df):
             'rhythm_similarity_percent': int(np.clip(float(rhythm_sim.get(idx, 0.0)) * 100.0, 0.0, 100.0))
         })
     return payload
+

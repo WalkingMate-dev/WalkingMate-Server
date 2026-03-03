@@ -1,0 +1,93 @@
+﻿services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: walkingmate_app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - USE_WAITRESS=${USE_WAITRESS}
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - FLASK_DEBUG=${FLASK_DEBUG}
+      - WAITRESS_THREADS=${WAITRESS_THREADS}
+      - REDIS_URL=${REDIS_URL}
+      - RQ_QUEUE_NAME=${RQ_QUEUE_NAME}
+      - TEMP_FOLDER=${TEMP_FOLDER}
+      - MYSQL_ENABLED=${MYSQL_ENABLED}
+      - MYSQL_HOST=${MYSQL_HOST}
+      - MYSQL_PORT=${MYSQL_PORT}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+    ports:
+      - "18080:18080"
+    volumes:
+      - ../Data:/app/Data
+      - ../temp:/app/temp
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: walkingmate_worker
+    restart: unless-stopped
+    command: ["python", "run_worker.py"]
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=${REDIS_URL}
+      - RQ_QUEUE_NAME=${RQ_QUEUE_NAME}
+      - RQ_SIMPLE_WORKER=${RQ_SIMPLE_WORKER}
+      - NUMBA_DISABLE_JIT=${NUMBA_DISABLE_JIT}
+      - TEMP_FOLDER=${TEMP_FOLDER}
+      - MYSQL_ENABLED=${MYSQL_ENABLED}
+      - MYSQL_HOST=${MYSQL_HOST}
+      - MYSQL_PORT=${MYSQL_PORT}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ../Data:/app/Data
+      - ../temp:/app/temp
+
+  redis:
+    image: redis:7-alpine
+    container_name: walkingmate_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  mysql:
+    image: mysql:8.4
+    container_name: walkingmate_mysql
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE_INIT}
+      - MYSQL_USER=${MYSQL_USER_INIT}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD_INIT}
+    command: ["--default-authentication-plugin=mysql_native_password"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  mysql_data:
+  redis_data:

@@ -1,4 +1,4 @@
-$python = 'C:\androidApp\server\.venv\Scripts\python.exe'
+$python = 'C:\PortfolioProject\server\.venv\Scripts\python.exe'
 Get-Process -Name python -ErrorAction SilentlyContinue | Where-Object {
     $_.Path -eq $python
 } | ForEach-Object {

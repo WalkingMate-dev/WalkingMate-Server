@@ -1,4 +1,4 @@
-# Python cache
+﻿# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
@@ -28,3 +28,17 @@ Data/images_original/
 # Editor/IDE
 .idea/
 .vscode/
+
+# Deploy / Terraform
+infra/aws/.terraform/
+infra/aws/.terraform.lock.hcl
+infra/aws/terraform.tfstate
+infra/aws/terraform.tfstate.*
+infra/aws/*.tfvars
+deploy/.env
+
+# Local helper scripts (개인 실행용)
+start_all.ps1
+stop_both.ps1
+run_both_with_logs.ps1
+run_redis_docker.ps1

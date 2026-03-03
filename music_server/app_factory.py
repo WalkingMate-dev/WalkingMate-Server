@@ -1,10 +1,11 @@
-import time
+﻿import time
 
 from flask import Flask, jsonify, g, request
 from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
 
 from music_server.routes.music_routes import music_bp
+from music_server.services.db import init_mysql_schema
 
 
 # Flask 앱 생성 및 라우트/미들웨어/에러 핸들러 등록
@@ -13,6 +14,8 @@ def create_app():
     # 웹 클라이언트(브라우저, Swagger UI)에서 호출할 때를 대비한 CORS 허용
     CORS(app)
     app.register_blueprint(music_bp)
+    # MYSQL_ENABLED=1인 환경에서 업로드 메타 기록 테이블 준비
+    init_mysql_schema()
     register_request_logging(app)
     register_error_handlers(app)
     return app
