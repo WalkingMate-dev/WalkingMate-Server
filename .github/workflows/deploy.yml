@@ -76,26 +76,33 @@ jobs:
         id: get_instance_id
         shell: bash
         run: |
-          INSTANCE_ID=$(aws ec2 describe-instances --filters \
+          INSTANCE_IDS=$(aws ec2 describe-instances --filters \
             "Name=tag:Name,Values=walkingmate-ec2" \
             "Name=instance-state-name,Values=running" \
             --query "Reservations[].Instances[].InstanceId" --output text)
-          if [ -z "$INSTANCE_ID" ]; then
+          if [ -z "$INSTANCE_IDS" ] || [ "$INSTANCE_IDS" = "None" ]; then
             echo "실행 중인 인스턴스를 찾지 못했습니다"
             exit 1
           fi
+
+          INSTANCE_COUNT=$(wc -w <<< "$INSTANCE_IDS")
+          if [ "$INSTANCE_COUNT" -ne 1 ]; then
+            echo "실행 중인 walkingmate-ec2 인스턴스가 ${INSTANCE_COUNT}개입니다. 정확히 1개여야 합니다."
+            aws ec2 describe-instances --filters \
+              "Name=tag:Name,Values=walkingmate-ec2" \
+              "Name=instance-state-name,Values=running" \
+              --query "Reservations[].Instances[].{InstanceId:InstanceId,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,LaunchTime:LaunchTime}" \
+              --output table
+            exit 1
+          fi
+
+          INSTANCE_ID="$INSTANCE_IDS"
           echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
 
-      - name: AWS SSM Send-Command
-        uses: peterkimzz/aws-ssm-send-command@master
-        with:
-          aws-region: ${{ secrets.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          instance-ids: ${{ env.INSTANCE_ID }}
-          working-directory: /
-          comment: WalkingMate Blue-Green Deploy
-          command: |
+      - name: AWS SSM 실행(대기/실패전파)
+        shell: bash
+        run: |
+          COMMANDS=$(cat <<'EOF_SCRIPT'
             set -euo pipefail
 
             IMAGE="ghcr.io/${{ needs.buildImageAndPush.outputs.owner_lc }}/${{ needs.buildImageAndPush.outputs.image_name }}:latest"
@@ -111,7 +118,19 @@ jobs:
             ENV_FILE="/opt/walkingmate/.env"
             APP_DIR="/opt/walkingmate"
 
+            # user_data가 반영되지 않았거나 신규 인스턴스인 경우도 배포가 가능하도록 보정
+            if ! command -v docker >/dev/null 2>&1; then
+              if command -v dnf >/dev/null 2>&1; then
+                dnf install -y docker git curl
+              elif command -v yum >/dev/null 2>&1; then
+                yum install -y docker git curl
+              else
+                echo "지원되지 않는 패키지 매니저: docker 설치 불가"
+                exit 1
+              fi
+            fi
             systemctl enable --now docker >/dev/null 2>&1 || true
+            command -v docker >/dev/null 2>&1 || { echo "docker 설치/실행 실패"; exit 1; }
             mkdir -p "$APP_DIR" "$APP_DIR/Data" "$APP_DIR/temp" "$APP_DIR/haproxy"
 
             cat > "${ENV_FILE}.raw" <<'EOF_ENV'
@@ -284,5 +303,46 @@ jobs:
 
             docker image prune -f >/dev/null 2>&1 || true
             echo "배포 완료: 활성 컨테이너=$NEXT, 포트=$NEXT_PORT"
+          EOF_SCRIPT
+          )
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "WalkingMate Blue-Green Deploy" \
+            --parameters "commands=$COMMANDS" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM CommandId: $COMMAND_ID"
+
+          # 실제 원격 실행 완료까지 대기
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${INSTANCE_ID}" || true
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${INSTANCE_ID}" \
+            --query "Status" \
+            --output text)
+
+          echo "SSM 실행 상태: $STATUS"
+          echo "----- SSM STDOUT (tail) -----"
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${INSTANCE_ID}" \
+            --query "StandardOutputContent" \
+            --output text | tail -n 200 || true
+
+          echo "----- SSM STDERR (tail) -----"
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${INSTANCE_ID}" \
+            --query "StandardErrorContent" \
+            --output text | tail -n 200 || true
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "SSM 배포 실패"
+            exit 1
+          fi
 
 
