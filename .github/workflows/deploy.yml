@@ -72,6 +72,10 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
+      - name: AWS 계정 확인
+        shell: bash
+        run: aws sts get-caller-identity
+
       - name: EC2 인스턴스 ID 조회
         id: get_instance_id
         shell: bash
@@ -97,6 +101,9 @@ jobs:
           fi
 
           INSTANCE_ID="$INSTANCE_IDS"
+          aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+            --query "Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,LaunchTime:LaunchTime}" \
+            --output table
           echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
 
       - name: AWS SSM 실행(대기/실패전파)
