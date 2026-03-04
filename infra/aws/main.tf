@@ -134,6 +134,27 @@ systemctl restart amazon-ssm-agent
 
 mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp /opt/walkingmate/haproxy /opt/walkingmate/mysql_data
 chown -R ec2-user:ec2-user /opt/walkingmate
+docker network create common >/dev/null 2>&1 || true
+
+MYSQL_ROOT_PASSWORD='${var.mysql_root_password}'
+MYSQL_DATABASE_INIT='${var.mysql_database_init}'
+MYSQL_USER_INIT='${var.mysql_user_init}'
+MYSQL_PASSWORD_INIT='${var.mysql_password_init}'
+
+if ! docker ps -a --format '{{.Names}}' | grep -Fxq walkingmate_mysql; then
+  docker run -d \
+    --name walkingmate_mysql \
+    --restart unless-stopped \
+    --network common \
+    -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" \
+    -e MYSQL_DATABASE="$MYSQL_DATABASE_INIT" \
+    -e MYSQL_USER="$MYSQL_USER_INIT" \
+    -e MYSQL_PASSWORD="$MYSQL_PASSWORD_INIT" \
+    -v /opt/walkingmate/mysql_data:/var/lib/mysql \
+    mysql:8.4
+else
+  docker start walkingmate_mysql >/dev/null 2>&1 || true
+fi
 
 # docker compose 플러그인이 없는 환경 대비(standalone 설치)
 if [ ! -x /usr/local/bin/docker-compose ]; then

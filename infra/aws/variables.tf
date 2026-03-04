@@ -40,3 +40,27 @@ variable "ssh_ingress_cidrs" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
+
+variable "mysql_root_password" {
+  description = "MySQL root 비밀번호(user_data 부팅 초기화용)"
+  type        = string
+  sensitive   = true
+}
+
+variable "mysql_database_init" {
+  description = "MySQL 초기 생성 데이터베이스명"
+  type        = string
+  default     = "walkingmate"
+}
+
+variable "mysql_user_init" {
+  description = "MySQL 초기 생성 사용자명"
+  type        = string
+  default     = "walkingmate"
+}
+
+variable "mysql_password_init" {
+  description = "MySQL 초기 생성 사용자 비밀번호(user_data 부팅 초기화용)"
+  type        = string
+  sensitive   = true
+}

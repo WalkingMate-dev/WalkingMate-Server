@@ -5,3 +5,7 @@ root_volume_size  = 25
 app_port          = 18080
 key_name          = null
 ssh_ingress_cidrs = ["0.0.0.0/0"] # 운영 시 반드시 "내 공인IP/32"로 제한 권장
+mysql_root_password = "change-me-root"
+mysql_database_init = "walkingmate"
+mysql_user_init     = "walkingmate"
+mysql_password_init = "change-me-user"
