@@ -126,9 +126,11 @@ locals {
 set -e
 
 dnf update -y
-dnf install -y docker git curl
+dnf install -y docker git curl amazon-ssm-agent
 systemctl enable docker
 systemctl start docker
+systemctl enable amazon-ssm-agent
+systemctl restart amazon-ssm-agent
 
 mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp /opt/walkingmate/haproxy /opt/walkingmate/mysql_data
 chown -R ec2-user:ec2-user /opt/walkingmate

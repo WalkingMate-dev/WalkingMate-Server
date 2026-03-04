@@ -194,25 +194,28 @@ jobs:
             fi
 
             # 옵션/이미지 변경사항을 확실히 반영하기 위해 MySQL 컨테이너는 항상 재생성한다.
-            mkdir -p /opt/walkingmate/mysql_data
-            # 초기화 중단으로 mysql 시스템 테이블이 비정상인 경우 자동 정리 후 재초기화
-            if [ -d /opt/walkingmate/mysql_data/mysql ] && [ ! -f /opt/walkingmate/mysql_data/mysql/user.ibd ]; then
-              echo "손상된 MySQL 데이터 디렉터리 감지, 초기화 후 재생성합니다."
-              rm -rf /opt/walkingmate/mysql_data/*
+            MYSQL_DATA_DIR="/opt/walkingmate/mysql_data"
+            mkdir -p "$MYSQL_DATA_DIR"
+            # 불완전한 잔존 상태(예: auto.cnf는 있는데 mysql 시스템 DB 폴더가 없음)만 선별적으로 정리
+            if [ -f "$MYSQL_DATA_DIR/auto.cnf" ] && [ ! -d "$MYSQL_DATA_DIR/mysql" ]; then
+              echo "불완전한 MySQL 데이터 디렉터리 감지, 초기화 후 재생성합니다."
+              find "$MYSQL_DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
             fi
 
-            docker rm -f "$MYSQL_NAME" 2>/dev/null || true
-            docker run -d \
-              --name "$MYSQL_NAME" \
-              --restart unless-stopped \
-              --network "$NETWORK" \
-              --env-file "$ENV_FILE" \
-              -e MYSQL_ROOT_PASSWORD="$(get_env_value MYSQL_ROOT_PASSWORD)" \
-              -e MYSQL_DATABASE="$(get_env_value MYSQL_DATABASE_INIT)" \
-              -e MYSQL_USER="$(get_env_value MYSQL_USER_INIT)" \
-              -e MYSQL_PASSWORD="$(get_env_value MYSQL_PASSWORD_INIT)" \
-              -v /opt/walkingmate/mysql_data:/var/lib/mysql \
-              mysql:8.4
+            start_mysql() {
+              docker rm -f "$MYSQL_NAME" 2>/dev/null || true
+              docker run -d \
+                --name "$MYSQL_NAME" \
+                --restart unless-stopped \
+                --network "$NETWORK" \
+                --env-file "$ENV_FILE" \
+                -e MYSQL_ROOT_PASSWORD="$(get_env_value MYSQL_ROOT_PASSWORD)" \
+                -e MYSQL_DATABASE="$(get_env_value MYSQL_DATABASE_INIT)" \
+                -e MYSQL_USER="$(get_env_value MYSQL_USER_INIT)" \
+                -e MYSQL_PASSWORD="$(get_env_value MYSQL_PASSWORD_INIT)" \
+                -v "$MYSQL_DATA_DIR:/var/lib/mysql" \
+                mysql:8.4
+            }
 
             wait_mysql() {
               local i=0
@@ -222,12 +225,35 @@ jobs:
                 i=$((i+1))
                 if [ "$i" -ge 40 ]; then
                   echo "MySQL 준비 실패"
+                  docker logs --tail=200 "$MYSQL_NAME" || true
                   exit 1
                 fi
                 sleep 3
               done
             }
+            verify_mysql_system_tables() {
+              local root_pw
+              root_pw="$(get_env_value MYSQL_ROOT_PASSWORD)"
+              docker exec "$MYSQL_NAME" \
+                mysql -h 127.0.0.1 -uroot -p"$root_pw" -Nse "SELECT COUNT(*) FROM mysql.user;" \
+                >/dev/null 2>&1
+            }
+
+            start_mysql
             wait_mysql
+            if ! verify_mysql_system_tables; then
+              echo "MySQL 시스템 테이블 검증 실패, 데이터 디렉터리 초기화 후 1회 재시도합니다."
+              docker logs --tail=200 "$MYSQL_NAME" || true
+              docker rm -f "$MYSQL_NAME" 2>/dev/null || true
+              find "$MYSQL_DATA_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+              start_mysql
+              wait_mysql
+              if ! verify_mysql_system_tables; then
+                echo "MySQL 시스템 테이블 재초기화 실패"
+                docker logs --tail=200 "$MYSQL_NAME" || true
+                exit 1
+              fi
+            fi
 
             HAS_BLUE=$(docker ps --format '{{.Names}}' | grep -Fx "$APP_BLUE" || true)
             HAS_GREEN=$(docker ps --format '{{.Names}}' | grep -Fx "$APP_GREEN" || true)
