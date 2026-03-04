@@ -126,7 +126,7 @@ locals {
 set -e
 
 dnf update -y
-dnf install -y docker git curl amazon-ssm-agent
+dnf install -y docker git curl amazon-ssm-agent ec2-instance-connect
 systemctl enable docker
 systemctl start docker
 systemctl enable amazon-ssm-agent
