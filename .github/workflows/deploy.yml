@@ -196,8 +196,18 @@ jobs:
             # MySQL은 Terraform user_data에서 생성/유지한다. 배포에서는 상태 확인만 수행한다.
             ensure_mysql_running() {
               if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$MYSQL_NAME"; then
-                echo "MySQL 컨테이너($MYSQL_NAME)가 없습니다. 인프라(user_data) 초기화 상태를 확인하세요."
-                exit 1
+                echo "MySQL 컨테이너($MYSQL_NAME)가 없어 1회 자동 생성합니다."
+                mkdir -p /opt/walkingmate/mysql_data
+                docker run -d \
+                  --name "$MYSQL_NAME" \
+                  --restart unless-stopped \
+                  --network "$NETWORK" \
+                  -e MYSQL_ROOT_PASSWORD="$(get_env_value MYSQL_ROOT_PASSWORD)" \
+                  -e MYSQL_DATABASE="$(get_env_value MYSQL_DATABASE_INIT)" \
+                  -e MYSQL_USER="$(get_env_value MYSQL_USER_INIT)" \
+                  -e MYSQL_PASSWORD="$(get_env_value MYSQL_PASSWORD_INIT)" \
+                  -v /opt/walkingmate/mysql_data:/var/lib/mysql \
+                  mysql:8.4
               fi
               docker start "$MYSQL_NAME" >/dev/null 2>&1 || true
             }
