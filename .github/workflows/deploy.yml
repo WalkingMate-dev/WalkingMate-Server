@@ -188,19 +188,15 @@ jobs:
             ENV_FILE="/opt/walkingmate/.env"
             APP_DIR="/opt/walkingmate"
 
-            # user_data가 반영되지 않았거나 신규 인스턴스인 경우도 배포가 가능하도록 보정
-            if ! command -v docker >/dev/null 2>&1; then
-              if command -v dnf >/dev/null 2>&1; then
-                dnf install -y docker git
-              elif command -v yum >/dev/null 2>&1; then
-                yum install -y docker git
-              else
-                echo "지원되지 않는 패키지 매니저: docker 설치 불가"
-                exit 1
-              fi
+            # 신규 인스턴스 부팅 직후에는 cloud-init/user_data 완료 전에 배포가 먼저 시작될 수 있다.
+            # 이 경우 장시간 설치 작업으로 SSH 세션이 끊기므로, 준비 상태를 빠르게 검증하고 실패한다.
+            if [ ! -f /var/lib/cloud/instance/boot-finished ]; then
+              echo "cloud-init 미완료: 잠시 후 배포를 재시도하세요."
+              exit 1
             fi
             systemctl enable --now docker >/dev/null 2>&1 || true
-            command -v docker >/dev/null 2>&1 || { echo "docker 설치/실행 실패"; exit 1; }
+            command -v docker >/dev/null 2>&1 || { echo "docker 미설치: user_data 실패 가능성"; exit 1; }
+            docker info >/dev/null 2>&1 || { echo "docker daemon 미준비: 잠시 후 재시도"; exit 1; }
             mkdir -p "$APP_DIR" "$APP_DIR/Data" "$APP_DIR/temp" "$APP_DIR/haproxy"
 
             printf '%s' '__WALKINGMATE_ENV_B64__' | base64 -d > "${ENV_FILE}.raw"
