@@ -61,7 +61,7 @@ jobs:
             ghcr.io/${{ steps.export_owner.outputs.owner_lc }}/${{ steps.export_image.outputs.image_name }}:latest
 
   deploy:
-    name: AWS SSM 블루그린 배포
+    name: AWS SSM 배포
     needs: [buildImageAndPush]
     runs-on: ubuntu-latest
 
@@ -142,51 +142,24 @@ jobs:
             set -euo pipefail
 
             IMAGE="ghcr.io/${{ needs.buildImageAndPush.outputs.owner_lc }}/${{ needs.buildImageAndPush.outputs.image_name }}:latest"
+            APP_NAME="walkingmate_app"
             NETWORK="common"
-            APP_BLUE="walkingmate_app_blue"
-            APP_GREEN="walkingmate_app_green"
-            APP_BLUE_PORT=28080
-            APP_GREEN_PORT=28081
-            WORKER_NAME="walkingmate_worker"
-            REDIS_NAME="walkingmate_redis"
-            MYSQL_NAME="walkingmate_mysql"
-            PROXY_NAME="walkingmate_haproxy"
             ENV_FILE="/opt/walkingmate/.env"
             APP_DIR="/opt/walkingmate"
 
-            # 신규 인스턴스 부팅 직후에는 cloud-init/user_data 완료 전에 배포가 먼저 시작될 수 있다.
-            # 이 경우 user_data 완료 전이라 배포 명령이 실패할 수 있어, 준비 상태를 빠르게 검증하고 실패한다.
             if [ ! -f /var/lib/cloud/instance/boot-finished ]; then
               echo "cloud-init 미완료: 잠시 후 배포를 재시도하세요."
               exit 1
             fi
-            systemctl enable --now docker >/dev/null 2>&1 || true
-            command -v docker >/dev/null 2>&1 || { echo "docker 미설치: user_data 실패 가능성"; exit 1; }
-            docker info >/dev/null 2>&1 || { echo "docker daemon 미준비: 잠시 후 재시도"; exit 1; }
-            mkdir -p "$APP_DIR" "$APP_DIR/Data" "$APP_DIR/temp" "$APP_DIR/haproxy"
+
+            command -v docker >/dev/null 2>&1 || { echo "docker 미설치"; exit 1; }
+            docker info >/dev/null 2>&1 || { echo "docker daemon 미준비"; exit 1; }
+
+            mkdir -p "$APP_DIR" "$APP_DIR/Data" "$APP_DIR/temp"
 
             printf '%s' '__WALKINGMATE_ENV_B64__' | base64 -d > "${ENV_FILE}.raw"
-            # 시크릿 값이 들여쓰기/CRLF로 저장된 경우를 정리한다.
             sed -e 's/\r$//' -e 's/^[[:space:]]*//' "${ENV_FILE}.raw" > "$ENV_FILE"
             rm -f "${ENV_FILE}.raw"
-
-            require_env_key() {
-              local key="$1"
-              if ! grep -q "^${key}=" "$ENV_FILE"; then
-                echo "필수 환경변수 누락: ${key}"
-                exit 1
-              fi
-            }
-
-            get_env_value() {
-              local key="$1"
-              awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
-            }
-
-            require_env_key MYSQL_ROOT_PASSWORD
-            require_env_key MYSQL_DATABASE_INIT
-            require_env_key MYSQL_USER_INIT
-            require_env_key MYSQL_PASSWORD_INIT
 
             docker network create "$NETWORK" >/dev/null 2>&1 || true
 
@@ -194,165 +167,34 @@ jobs:
             docker pull "$IMAGE"
             DIGEST=$(docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}')
 
-            if ! docker ps --format '{{.Names}}' | grep -Fxq "$REDIS_NAME"; then
-              docker run -d --name "$REDIS_NAME" --restart unless-stopped --network "$NETWORK" redis:7-alpine
-            fi
-
-            # MySQL은 Terraform user_data에서 생성/유지한다. 배포에서는 상태 확인만 수행한다.
-            ensure_mysql_running() {
-              if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$MYSQL_NAME"; then
-                echo "MySQL 컨테이너($MYSQL_NAME)가 없어 1회 자동 생성합니다."
-                mkdir -p /opt/walkingmate/mysql_data
-                docker run -d \
-                  --name "$MYSQL_NAME" \
-                  --restart unless-stopped \
-                  --network "$NETWORK" \
-                  -e MYSQL_ROOT_PASSWORD="$(get_env_value MYSQL_ROOT_PASSWORD)" \
-                  -e MYSQL_DATABASE="$(get_env_value MYSQL_DATABASE_INIT)" \
-                  -e MYSQL_USER="$(get_env_value MYSQL_USER_INIT)" \
-                  -e MYSQL_PASSWORD="$(get_env_value MYSQL_PASSWORD_INIT)" \
-                  -v /opt/walkingmate/mysql_data:/var/lib/mysql \
-                  mysql:8.4
-              fi
-              docker start "$MYSQL_NAME" >/dev/null 2>&1 || true
-            }
-
-            wait_mysql() {
-              local i=0
-              local root_pw
-              root_pw="$(get_env_value MYSQL_ROOT_PASSWORD)"
-              until docker exec "$MYSQL_NAME" mysqladmin ping -h 127.0.0.1 -uroot -p"$root_pw" >/dev/null 2>&1; do
-                i=$((i+1))
-                if [ "$i" -ge 40 ]; then
-                  echo "MySQL 준비 실패"
-                  docker logs --tail=200 "$MYSQL_NAME" || true
-                  exit 1
-                fi
-                sleep 3
-              done
-            }
-            verify_mysql_system_tables() {
-              local root_pw
-              root_pw="$(get_env_value MYSQL_ROOT_PASSWORD)"
-              docker exec "$MYSQL_NAME" \
-                mysql -h 127.0.0.1 -uroot -p"$root_pw" -Nse "SELECT COUNT(*) FROM mysql.user;" \
-                >/dev/null 2>&1
-            }
-
-            ensure_mysql_running
-            wait_mysql
-            if ! verify_mysql_system_tables; then
-              echo "MySQL 시스템 테이블 검증 실패"
-              docker logs --tail=200 "$MYSQL_NAME" || true
-              exit 1
-            fi
-
-            HAS_BLUE=$(docker ps --format '{{.Names}}' | grep -Fx "$APP_BLUE" || true)
-            HAS_GREEN=$(docker ps --format '{{.Names}}' | grep -Fx "$APP_GREEN" || true)
-
-            if [ -n "$HAS_BLUE" ] && [ -z "$HAS_GREEN" ]; then
-              CURRENT="$APP_BLUE"
-              NEXT="$APP_GREEN"
-              NEXT_PORT="$APP_GREEN_PORT"
-            elif [ -n "$HAS_GREEN" ] && [ -z "$HAS_BLUE" ]; then
-              CURRENT="$APP_GREEN"
-              NEXT="$APP_BLUE"
-              NEXT_PORT="$APP_BLUE_PORT"
-            else
-              CURRENT=""
-              NEXT="$APP_BLUE"
-              NEXT_PORT="$APP_BLUE_PORT"
-            fi
-
-            docker stop "$NEXT" 2>/dev/null || true
-            docker rm "$NEXT" 2>/dev/null || true
+            docker stop "$APP_NAME" 2>/dev/null || true
+            docker rm "$APP_NAME" 2>/dev/null || true
 
             docker run -d \
-              --name "$NEXT" \
+              --name "$APP_NAME" \
               --restart unless-stopped \
               --network "$NETWORK" \
               --env-file "$ENV_FILE" \
-              -p "$NEXT_PORT":18080 \
+              -p 18080:18080 \
               -v /opt/walkingmate/Data:/app/Data \
               -v /opt/walkingmate/temp:/app/temp \
               "$DIGEST"
 
-            wait_http() {
-              local port="$1"
-              local path="$2"
-              local timeout="$3"
-              local start elapsed
-              start=$(date +%s)
-              while true; do
-                if curl -fsS "http://127.0.0.1:${port}${path}" >/dev/null; then
-                  return 0
-                fi
-                elapsed=$(( $(date +%s) - start ))
-                if [ "$elapsed" -ge "$timeout" ]; then
-                  return 1
-                fi
-                sleep 3
-              done
-            }
+            for i in $(seq 1 20); do
+              if curl -fsS "http://127.0.0.1:18080/health" >/dev/null; then
+                echo "배포 완료: 컨테이너=$APP_NAME"
+                docker image prune -f >/dev/null 2>&1 || true
+                exit 0
+              fi
+              sleep 3
+            done
 
-            if ! wait_http "$NEXT_PORT" "/health" 120; then
-              echo "새 컨테이너 헬스체크 실패"
-              docker logs --tail=200 "$NEXT" || true
-              exit 1
-            fi
-
-            cat > /opt/walkingmate/haproxy/haproxy.cfg <<'EOF_HAPROXY'
-            global
-              log stdout format raw local0
-
-            defaults
-              mode http
-              option httplog
-              timeout connect 5s
-              timeout client 60s
-              timeout server 60s
-
-            frontend wm_front
-              bind *:18080
-              default_backend wm_back
-
-            backend wm_back
-              balance roundrobin
-              option httpchk GET /health
-              server wm_blue walkingmate_app_blue:18080 check
-              server wm_green walkingmate_app_green:18080 check
-            EOF_HAPROXY
-
-            docker rm -f "$PROXY_NAME" 2>/dev/null || true
-            docker run -d \
-              --name "$PROXY_NAME" \
-              --restart unless-stopped \
-              --network "$NETWORK" \
-              -p 18080:18080 \
-              -v /opt/walkingmate/haproxy:/usr/local/etc/haproxy \
-              haproxy:3.0
-
-            docker stop "$WORKER_NAME" 2>/dev/null || true
-            docker rm "$WORKER_NAME" 2>/dev/null || true
-            docker run -d \
-              --name "$WORKER_NAME" \
-              --restart unless-stopped \
-              --network "$NETWORK" \
-              --env-file "$ENV_FILE" \
-              -v /opt/walkingmate/Data:/app/Data \
-              -v /opt/walkingmate/temp:/app/temp \
-              "$DIGEST" \
-              python run_worker.py
-
-            if [ -n "$CURRENT" ]; then
-              docker stop "$CURRENT" 2>/dev/null || true
-              docker rm "$CURRENT" 2>/dev/null || true
-            fi
-
-            docker image prune -f >/dev/null 2>&1 || true
-            echo "배포 완료: 활성 컨테이너=$NEXT, 포트=$NEXT_PORT"
+            echo "헬스체크 실패"
+            docker logs --tail=200 "$APP_NAME" || true
+            exit 1
           EOF_SCRIPT
           )
+
           COMMANDS="$(printf '%s' "$COMMANDS" | sed "s|__WALKINGMATE_ENV_B64__|$WALKINGMATE_ENV_B64|g")"
           printf '%s\n' "$COMMANDS" > ssm-deploy.sh
           jq -n --rawfile script ssm-deploy.sh '{commands: [$script]}' > ssm-params.json
@@ -360,7 +202,7 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "WalkingMate Blue-Green Deploy" \
+            --comment "WalkingMate Deploy" \
             --parameters file://ssm-params.json \
             --query "Command.CommandId" \
             --output text)
@@ -414,7 +256,3 @@ jobs:
           echo "SSM 배포 타임아웃 - 명령 취소 시도"
           aws ssm cancel-command --command-id "$COMMAND_ID" >/dev/null 2>&1 || true
           exit 1
-
-
-
-
