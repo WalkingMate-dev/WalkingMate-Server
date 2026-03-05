@@ -1,4 +1,4 @@
-name: deploy-ssm-check
+name: deploy-staged
 
 on:
   push:
@@ -6,21 +6,35 @@ on:
       - main
     paths:
       - '.github/workflows/**'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: '실행 단계 (ssm | docker | app)'
+        required: true
+        default: 'ssm'
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-ssm-check
+  group: deploy-staged
   cancel-in-progress: true
 
 jobs:
-  ssm-check:
-    name: AWS SSM 연결 체크
+  staged-check:
+    name: AWS SSM 단계별 체크
     runs-on: ubuntu-latest
 
     steps:
+      - name: jq 설치(없을 때 대비)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ secrets.AWS_REGION }}
@@ -75,17 +89,83 @@ jobs:
             exit 1
           fi
 
-      - name: SSM 명령 전송 (초경량)
+      - name: SSM 명령 전송 (단계별)
         shell: bash
         run: |
           set -euo pipefail
 
+          STAGE="${{ github.event.inputs.stage || 'ssm' }}"
+          echo "STAGE=${STAGE}"
+
+          IMAGE="ghcr.io/walkingmate-dev/walkingmate-server:latest"
+          ENV_B64="$(printf '%s' '${{ secrets.WALKINGMATE_ENV }}' | base64 -w 0)"
+
+          case "$STAGE" in
+            ssm)
+              jq -n '{
+                commands: [
+                  "set -euo pipefail",
+                  "echo WM_STAGE_SSM_START",
+                  "date",
+                  "uname -a",
+                  "echo WM_STAGE_SSM_OK"
+                ]
+              }' > ssm-params.json
+              ;;
+
+            docker)
+              jq -n '{
+                commands: [
+                  "set -euo pipefail",
+                  "echo WM_STAGE_DOCKER_START",
+                  "command -v docker >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_NOT_FOUND; exit 12; }",
+                  "docker info >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_DAEMON_NOT_READY; exit 13; }",
+                  "docker rm -f walkingmate_app >/dev/null 2>&1 || true",
+                  "docker run -d --name walkingmate_app --restart unless-stopped -p 18080:80 nginx:alpine",
+                  "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null && { echo WM_STAGE_DOCKER_OK; exit 0; }; sleep 2; done; echo WM_FAIL_DOCKER_HEALTH; docker logs --tail=200 walkingmate_app || true; exit 14"
+                ]
+              }' > ssm-params.json
+              ;;
+
+            app)
+              jq -n \
+                --arg image "$IMAGE" \
+                --arg env_b64 "$ENV_B64" \
+                --arg ghcr_user "${{ secrets.GHCR_USERNAME }}" \
+                --arg ghcr_token "${{ secrets.GHCR_TOKEN }}" \
+                '{
+                  commands: [
+                    "set -euo pipefail",
+                    "echo WM_STAGE_APP_START",
+                    "command -v docker >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_NOT_FOUND; exit 12; }",
+                    "docker info >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_DAEMON_NOT_READY; exit 13; }",
+                    "mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp",
+                    ("printf %s " + $env_b64 + " | base64 -d > /opt/walkingmate/.env.raw"),
+                    "sed -e '\''s/\\r$//'\'' -e '\''s/^[[:space:]]*//'\'' /opt/walkingmate/.env.raw > /opt/walkingmate/.env",
+                    "rm -f /opt/walkingmate/.env.raw",
+                    "docker network create common >/dev/null 2>&1 || true",
+                    ("echo \"" + $ghcr_token + "\" | docker login ghcr.io -u \"" + $ghcr_user + "\" --password-stdin"),
+                    ("docker pull " + $image),
+                    "docker stop walkingmate_app >/dev/null 2>&1 || true",
+                    "docker rm walkingmate_app >/dev/null 2>&1 || true",
+                    ("docker run -d --name walkingmate_app --restart unless-stopped --network common --env-file /opt/walkingmate/.env -p 18080:18080 -v /opt/walkingmate/Data:/app/Data -v /opt/walkingmate/temp:/app/temp " + $image),
+                    "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/health >/dev/null && { echo WM_STAGE_APP_OK; exit 0; }; sleep 2; done; echo WM_FAIL_APP_HEALTH; docker logs --tail=200 walkingmate_app || true; exit 15"
+                  ]
+                }' > ssm-params.json
+              ;;
+
+            *)
+              echo "잘못된 stage: $STAGE"
+              exit 1
+              ;;
+          esac
+
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
-            --comment "WalkingMate SSM Check run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --timeout-seconds 60 \
-            --parameters commands='["set -euo pipefail","echo WM_SSM_CHECK_START","date","uname -a","echo WM_SSM_CHECK_OK"]' \
+            --comment "WalkingMate staged-check stage=${STAGE} run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --timeout-seconds 180 \
+            --parameters file://ssm-params.json \
             --query "Command.CommandId" \
             --output text)
 
@@ -98,18 +178,18 @@ jobs:
           set -euo pipefail
 
           sleep 3
-          for i in $(seq 1 24); do
+          for i in $(seq 1 30); do
             OUT=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id "$INSTANCE_ID" \
               --output json 2>&1) || {
-                echo "get-command-invocation error: $OUT (${i}/24)"
-                sleep 5
+                echo "get-command-invocation error: $OUT (${i}/30)"
+                sleep 4
                 continue
               }
 
             STATUS=$(echo "$OUT" | jq -r '.Status // empty')
-            echo "상태=${STATUS:-Unknown} (${i}/24)"
+            echo "상태=${STATUS:-Unknown} (${i}/30)"
 
             case "$STATUS" in
               Success)
@@ -119,7 +199,7 @@ jobs:
                 exit 0
                 ;;
               Pending|InProgress|Delayed|"")
-                sleep 5
+                sleep 4
                 ;;
               Failed|TimedOut|Cancelled|Cancelling)
                 echo "SSM 체크 실패 상태=$STATUS"
@@ -132,7 +212,7 @@ jobs:
               *)
                 echo "알 수 없는 상태=$STATUS"
                 echo "$OUT"
-                sleep 5
+                sleep 4
                 ;;
             esac
           done
