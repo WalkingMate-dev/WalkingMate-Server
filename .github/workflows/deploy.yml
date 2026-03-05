@@ -111,6 +111,32 @@ jobs:
         run: |
           set -euo pipefail
 
+          # 1) 기존 InProgress 명령 정리
+          IN_PROGRESS_IDS=$(aws ssm list-command-invocations \
+            --details \
+            --query "CommandInvocations[?InstanceId=='${INSTANCE_ID}' && Status=='InProgress'].CommandId" \
+            --output text || true)
+
+          if [ -n "${IN_PROGRESS_IDS:-}" ] && [ "${IN_PROGRESS_IDS}" != "None" ]; then
+            echo "기존 InProgress 명령 정리: $IN_PROGRESS_IDS"
+            for OLD_ID in $IN_PROGRESS_IDS; do
+              aws ssm cancel-command --command-id "$OLD_ID" >/dev/null 2>&1 || true
+            done
+
+            for i in $(seq 1 24); do
+              REMAINING=$(aws ssm list-command-invocations \
+                --details \
+                --query "CommandInvocations[?InstanceId=='${INSTANCE_ID}' && Status=='InProgress'].CommandId" \
+                --output text || true)
+              if [ -z "${REMAINING:-}" ] || [ "$REMAINING" = "None" ]; then
+                echo "기존 InProgress 명령 정리 완료"
+                break
+              fi
+              echo "기존 명령 취소 대기 중... ($i/24)"
+              sleep 5
+            done
+          fi
+
           WALKINGMATE_ENV_B64="$(printf '%s' '${{ secrets.WALKINGMATE_ENV }}' | base64 -w 0)"
           COMMANDS=$(cat <<'EOF_SCRIPT'
             set -euo pipefail
@@ -385,6 +411,10 @@ jobs:
             esac
           done
 
-          echo "SSM 배포 타임아웃"
+          echo "SSM 배포 타임아웃 - 명령 취소 시도"
+          aws ssm cancel-command --command-id "$COMMAND_ID" >/dev/null 2>&1 || true
           exit 1
+
+
+
 
