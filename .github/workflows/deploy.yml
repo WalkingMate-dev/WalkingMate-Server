@@ -6,15 +6,22 @@ on:
       - main
     paths:
       - '.github/workflows/**'
+      - 'music_server/**'
+      - 'server.py'
+      - 'run_worker.py'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'deploy/**'
   workflow_dispatch:
     inputs:
       stage:
         description: '실행 단계 (ssm | docker | app)'
         required: true
-        default: 'ssm'
+        default: 'app'
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: deploy-staged
@@ -26,6 +33,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
+      - name: 실행 단계 결정
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            STAGE="app"
+          else
+            STAGE="${{ github.event.inputs.stage || 'app' }}"
+          fi
+          echo "STAGE=$STAGE" >> "$GITHUB_ENV"
+          echo "선택된 단계: $STAGE"
+
       - name: jq 설치(없을 때 대비)
         shell: bash
         run: |
@@ -34,6 +55,27 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y jq
           fi
+
+      - name: GHCR 로그인 (app 단계)
+        if: env.STAGE == 'app'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Docker Buildx 설치 (app 단계)
+        if: env.STAGE == 'app'
+        uses: docker/setup-buildx-action@v3
+
+      - name: 이미지 빌드 및 푸시 (app 단계)
+        if: env.STAGE == 'app'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ghcr.io/walkingmate-dev/walkingmate-server:latest
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -94,7 +136,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          STAGE="${{ github.event.inputs.stage || 'ssm' }}"
+          STAGE="${STAGE}"
           echo "STAGE=${STAGE}"
 
           IMAGE="ghcr.io/walkingmate-dev/walkingmate-server:latest"
