@@ -127,7 +127,7 @@ locals {
 set -euo pipefail
 
 dnf update -y
-dnf install -y docker git curl amazon-ssm-agent ec2-instance-connect
+dnf install -y docker git amazon-ssm-agent ec2-instance-connect
 systemctl enable --now docker
 systemctl enable --now amazon-ssm-agent
 
@@ -181,3 +181,4 @@ resource "aws_instance" "server" {
     Name = "walkingmate-ec2"
   }
 }
+
