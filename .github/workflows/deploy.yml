@@ -161,46 +161,21 @@ jobs:
           ENV_B64="$(printf '%s' '${{ secrets.WALKINGMATE_ENV }}' | base64 -w 0)"
           DEPLOY_COMMENT="WalkingMate Deploy tag=${TARGET_TAG_NAME} run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
-          jq -n \
-            --arg env_b64 "$ENV_B64" \
-            --arg image "$IMAGE" \
-            --arg ghcr_user "${{ secrets.GHCR_USERNAME }}" \
-            --arg ghcr_token "${{ secrets.GHCR_TOKEN }}" \
-            '{
-              commands: [
-                "set -euo pipefail",
-
-                "echo WM_STEP_01_BOOT_CHECK",
-                "if [ ! -f /var/lib/cloud/instance/boot-finished ]; then echo WM_FAIL_BOOT_NOT_FINISHED; exit 11; fi",
-
-                "echo WM_STEP_02_DOCKER_CHECK",
-                "command -v docker >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_NOT_FOUND; exit 12; }",
-                "timeout 20 docker info >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_DAEMON_NOT_READY; exit 13; }",
-
-                "echo WM_STEP_03_PREPARE_DIR",
-                "mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp",
-                ("printf %s " + $env_b64 + " | base64 -d > /opt/walkingmate/.env.raw"),
-                "sed -e '\''s/\\r$//'\'' -e '\''s/^[[:space:]]*//'\'' /opt/walkingmate/.env.raw > /opt/walkingmate/.env",
-                "rm -f /opt/walkingmate/.env.raw",
-
-                "echo WM_STEP_04_NETWORK",
-                "docker network create common >/dev/null 2>&1 || true",
-
-                "echo WM_STEP_05_GHCR_LOGIN",
-                ("timeout 30 sh -c '\''echo \"" + $ghcr_token + "\" | docker login ghcr.io -u \"" + $ghcr_user + "\" --password-stdin'\''"),
-
-                "echo WM_STEP_06_PULL_IMAGE",
-                ("timeout 240 docker pull " + $image),
-
-                "echo WM_STEP_07_RESTART_APP",
-                "docker stop walkingmate_app >/dev/null 2>&1 || true",
-                "docker rm walkingmate_app >/dev/null 2>&1 || true",
-                ("timeout 30 docker run -d --name walkingmate_app --restart unless-stopped --network common --env-file /opt/walkingmate/.env -p 18080:18080 -v /opt/walkingmate/Data:/app/Data -v /opt/walkingmate/temp:/app/temp " + $image),
-
-                "echo WM_STEP_08_HEALTHCHECK",
-                "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/health >/dev/null && { echo WM_OK_HEALTHCHECK; exit 0; }; sleep 2; done; echo WM_FAIL_HEALTHCHECK; docker logs --tail=200 walkingmate_app || true; exit 14"
-              ]
-            }' > ssm-params.json
+          jq -n '{
+            commands: [
+              "set -euo pipefail",
+              "echo WM_STEP_01_BOOT_CHECK",
+              "if [ ! -f /var/lib/cloud/instance/boot-finished ]; then echo WM_FAIL_BOOT_NOT_FINISHED; exit 11; fi",
+              "echo WM_STEP_02_DOCKER_CHECK",
+              "command -v docker >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_NOT_FOUND; exit 12; }",
+              "timeout 20 docker info >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_DAEMON_NOT_READY; exit 13; }",
+              "echo WM_STEP_03_SMOKE_CONTAINER",
+              "docker rm -f walkingmate_app >/dev/null 2>&1 || true",
+              "timeout 30 docker run -d --name walkingmate_app --restart unless-stopped -p 18080:80 nginx:alpine",
+              "echo WM_STEP_04_HEALTHCHECK",
+              "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null && { echo WM_OK_SMOKE; exit 0; }; sleep 2; done; echo WM_FAIL_SMOKE; docker logs --tail=200 walkingmate_app || true; exit 14"
+            ]
+          }' > ssm-params.json
 
           echo "----- ssm-params.json (sanitized) -----"
           # 토큰/환경값은 노출되면 안되니 commands만 보여줌(디버깅용)
