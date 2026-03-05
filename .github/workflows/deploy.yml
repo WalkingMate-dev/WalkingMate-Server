@@ -80,32 +80,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          TAG_NAME="walkingmate-ec2"
 
           INSTANCE_IDS=$(aws ec2 describe-instances --filters \
-            "Name=tag:Name,Values=walkingmate-ec2" \
+            "Name=tag:Name,Values=${TAG_NAME}" \
             "Name=instance-state-name,Values=running" \
             --query "Reservations[].Instances[].InstanceId" --output text)
 
           if [ -z "${INSTANCE_IDS}" ] || [ "${INSTANCE_IDS}" = "None" ]; then
-            echo "실행 중인 walkingmate-ec2 인스턴스를 찾지 못했습니다"
+            echo "실행 중인 ${TAG_NAME} 인스턴스를 찾지 못했습니다"
             exit 1
           fi
 
           COUNT=$(wc -w <<< "${INSTANCE_IDS}")
           if [ "${COUNT}" -ne 1 ]; then
-            echo "실행 중인 walkingmate-ec2 인스턴스가 ${COUNT}개입니다. 정확히 1개여야 합니다."
+            echo "실행 중인 ${TAG_NAME} 인스턴스가 ${COUNT}개입니다. 정확히 1개여야 합니다."
             aws ec2 describe-instances --filters \
-              "Name=tag:Name,Values=walkingmate-ec2" \
+              "Name=tag:Name,Values=${TAG_NAME}" \
               "Name=instance-state-name,Values=running" \
-              --query "Reservations[].Instances[].{InstanceId:InstanceId,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,LaunchTime:LaunchTime}" \
+              --query "Reservations[].Instances[].{Name:Tags[?Key=='Name']|[0].Value,InstanceId:InstanceId,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,LaunchTime:LaunchTime}" \
               --output table
             exit 1
           fi
 
           INSTANCE_ID="${INSTANCE_IDS}"
+          echo "TARGET_TAG_NAME=${TAG_NAME}" >> "$GITHUB_ENV"
           echo "INSTANCE_ID=${INSTANCE_ID}" >> "$GITHUB_ENV"
           aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
-            --query "Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,LaunchTime:LaunchTime}" \
+            --query "Reservations[].Instances[].{Name:Tags[?Key=='Name']|[0].Value,InstanceId:InstanceId,State:State.Name,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,LaunchTime:LaunchTime}" \
             --output table
 
       - name: SSM 상태 확인
@@ -146,6 +148,7 @@ jobs:
 
           IMAGE="ghcr.io/${{ needs.buildImageAndPush.outputs.owner_lc }}/${{ needs.buildImageAndPush.outputs.image_name }}:latest"
           ENV_B64="$(printf '%s' '${{ secrets.WALKINGMATE_ENV }}' | base64 -w 0)"
+          DEPLOY_COMMENT="WalkingMate Deploy tag=${TARGET_TAG_NAME} run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           jq -n \
             --arg env_b64 "$ENV_B64" \
@@ -155,28 +158,36 @@ jobs:
             '{
               commands: [
                 "set -euo pipefail",
-                "if [ ! -f /var/lib/cloud/instance/boot-finished ]; then echo cloud-init 미완료; exit 1; fi",
-                "command -v docker >/dev/null 2>&1 || { echo docker 미설치; exit 1; }",
-                "docker info >/dev/null 2>&1 || { echo docker daemon 미준비; exit 1; }",
+                "echo WM_STEP_01_BOOT_CHECK",
+                "if [ ! -f /var/lib/cloud/instance/boot-finished ]; then echo WM_FAIL_BOOT_NOT_FINISHED; exit 11; fi",
+                "echo WM_STEP_02_DOCKER_CHECK",
+                "command -v docker >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_NOT_FOUND; exit 12; }",
+                "docker info >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_DAEMON_NOT_READY; exit 13; }",
+                "echo WM_STEP_03_PREPARE_DIR",
                 "mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp",
                 ("printf %s " + $env_b64 + " | base64 -d > /opt/walkingmate/.env.raw"),
                 "sed -e '\''s/\\r$//'\'' -e '\''s/^[[:space:]]*//'\'' /opt/walkingmate/.env.raw > /opt/walkingmate/.env",
                 "rm -f /opt/walkingmate/.env.raw",
+                "echo WM_STEP_04_NETWORK",
                 "docker network create common >/dev/null 2>&1 || true",
+                "echo WM_STEP_05_GHCR_LOGIN",
                 ("echo \"" + $ghcr_token + "\" | docker login ghcr.io -u \"" + $ghcr_user + "\" --password-stdin"),
+                "echo WM_STEP_06_PULL_IMAGE",
                 ("docker pull " + $image),
+                "echo WM_STEP_07_RESTART_APP",
                 "docker stop walkingmate_app >/dev/null 2>&1 || true",
                 "docker rm walkingmate_app >/dev/null 2>&1 || true",
                 ("docker run -d --name walkingmate_app --restart unless-stopped --network common --env-file /opt/walkingmate/.env -p 18080:18080 -v /opt/walkingmate/Data:/app/Data -v /opt/walkingmate/temp:/app/temp " + $image),
-                "for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/health >/dev/null && exit 0; sleep 2; done; echo 헬스체크 실패; docker logs --tail=200 walkingmate_app || true; exit 1"
+                "echo WM_STEP_08_HEALTHCHECK",
+                "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/health >/dev/null && { echo WM_OK_HEALTHCHECK; exit 0; }; sleep 2; done; echo WM_FAIL_HEALTHCHECK; docker logs --tail=200 walkingmate_app || true; exit 14"
               ]
             }' > ssm-params.json
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
-            --comment "WalkingMate Deploy" \
-            --timeout-seconds 900 \
+            --comment "$DEPLOY_COMMENT" \
+            --timeout-seconds 300 \
             --parameters file://ssm-params.json \
             --query "Command.CommandId" \
             --output text)
@@ -189,28 +200,56 @@ jobs:
         run: |
           set -euo pipefail
 
-          if aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"; then
-            echo "SSM 배포 성공"
-            aws ssm get-command-invocation \
+          for i in $(seq 1 36); do
+            STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id "$INSTANCE_ID" \
-              --query "StandardOutputContent" \
-              --output text || true
-            exit 0
-          fi
+              --query "Status" \
+              --output text 2>/dev/null || true)
 
-          echo "SSM 배포 실패"
-          echo "----- SSM STDOUT -----"
-          aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query "StandardOutputContent" \
-            --output text || true
-          echo "----- SSM STDERR -----"
-          aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query "StandardErrorContent" \
-            --output text || true
+            case "$STATUS" in
+              Success)
+                echo "SSM 배포 성공"
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query "StandardOutputContent" \
+                  --output text || true
+                exit 0
+                ;;
+              Pending|InProgress|Delayed|"")
+                echo "SSM 실행 중... 상태=${STATUS:-Unknown} (${i}/36)"
+                sleep 5
+                ;;
+              Failed|TimedOut|Cancelled|Cancelling)
+                echo "SSM 배포 실패 상태=$STATUS"
+                echo "----- SSM STDOUT -----"
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query "StandardOutputContent" \
+                  --output text || true
+                echo "----- SSM STDERR -----"
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query "StandardErrorContent" \
+                  --output text || true
+                exit 1
+                ;;
+              *)
+                echo "알 수 없는 SSM 상태=$STATUS (${i}/36)"
+                sleep 5
+                ;;
+            esac
+          done
+
+          echo "SSM 배포 타임아웃(3분): 명령 취소"
           aws ssm cancel-command --command-id "$COMMAND_ID" >/dev/null 2>&1 || true
+          echo "----- SSM INVOCATION SUMMARY -----"
+          aws ssm list-command-invocations \
+            --details \
+            --command-id "$COMMAND_ID" \
+            --query "CommandInvocations[].{Status:Status,StatusDetails:StatusDetails,InstanceId:InstanceId,RequestedDateTime:RequestedDateTime}" \
+            --output table || true
           exit 1
