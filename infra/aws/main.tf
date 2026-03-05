@@ -64,6 +64,15 @@ resource "aws_security_group" "server" {
   name        = "${var.project_name}-server-sg"
   description = "WalkingMate server security group"
   vpc_id      = aws_vpc.this.id
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   # API entry point used by Android app and HAProxy on host port.
   ingress {
     description = "WalkingMate API"
@@ -118,7 +127,7 @@ locals {
 set -euo pipefail
 
 dnf update -y
-dnf install -y docker git curl amazon-ssm-agent
+dnf install -y docker git curl amazon-ssm-agent ec2-instance-connect
 systemctl enable --now docker
 systemctl enable --now amazon-ssm-agent
 
@@ -172,4 +181,3 @@ resource "aws_instance" "server" {
     Name = "walkingmate-ec2"
   }
 }
-
