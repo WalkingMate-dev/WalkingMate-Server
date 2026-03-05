@@ -1,4 +1,4 @@
-name: deploy
+name: deploy-ssm-check
 
 on:
   push:
@@ -6,227 +6,123 @@ on:
       - main
     paths:
       - '.github/workflows/**'
-      - 'music_server/**'
-      - 'server.py'
-      - 'run_worker.py'
-      - 'Dockerfile'
-      - 'requirements.txt'
-      - 'deploy/**'
   workflow_dispatch: {}
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: deploy
-  cancel-in-progress: false
+  group: deploy-ssm-check
+  cancel-in-progress: true
 
 jobs:
-  buildImageAndPush:
-    name: 도커 이미지 빌드 및 푸시
-    runs-on: ubuntu-latest
-    outputs:
-      owner_lc: ${{ steps.export_owner.outputs.owner_lc }}
-      image_name: ${{ steps.export_image.outputs.image_name }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: GHCR 로그인
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 레포 소유자 소문자 변환
-        id: export_owner
-        shell: bash
-        run: |
-          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "owner_lc=$OWNER_LC" >> "$GITHUB_OUTPUT"
-
-      - name: 이미지 이름 고정
-        id: export_image
-        shell: bash
-        run: echo "image_name=walkingmate-server" >> "$GITHUB_OUTPUT"
-
-      - name: 이미지 빌드 및 푸시
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ghcr.io/${{ steps.export_owner.outputs.owner_lc }}/${{ steps.export_image.outputs.image_name }}:latest
-
-  deploy:
-    name: AWS SSM 배포
-    needs: [buildImageAndPush]
+  ssm-check:
+    name: AWS SSM 연결 체크
     runs-on: ubuntu-latest
 
     steps:
-      - name: jq 설치(없을 때 대비)
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y jq
-          fi
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ secrets.AWS_REGION }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-      - name: AWS 계정 확인
-        shell: bash
-        run: aws sts get-caller-identity
-
-      - name: 배포 대상 인스턴스 조회
+      - name: 대상 인스턴스 조회
         shell: bash
         run: |
           set -euo pipefail
-          TAG_NAME="walkingmate-ec2"
 
+          TAG_NAME="walkingmate-ec2"
           INSTANCE_IDS=$(aws ec2 describe-instances --filters \
             "Name=tag:Name,Values=${TAG_NAME}" \
             "Name=instance-state-name,Values=running" \
             --query "Reservations[].Instances[].InstanceId" --output text)
 
           if [ -z "${INSTANCE_IDS}" ] || [ "${INSTANCE_IDS}" = "None" ]; then
-            echo "실행 중인 ${TAG_NAME} 인스턴스를 찾지 못했습니다"
+            echo "running 인스턴스 없음: ${TAG_NAME}"
             exit 1
           fi
 
           COUNT=$(wc -w <<< "${INSTANCE_IDS}")
-          if [ "${COUNT}" -ne 1 ]; then
-            echo "실행 중인 ${TAG_NAME} 인스턴스가 ${COUNT}개입니다. 정확히 1개여야 합니다."
+          if [ "$COUNT" -ne 1 ]; then
+            echo "running 인스턴스 ${COUNT}개: ${TAG_NAME}"
             aws ec2 describe-instances --filters \
               "Name=tag:Name,Values=${TAG_NAME}" \
               "Name=instance-state-name,Values=running" \
-              --query "Reservations[].Instances[].{Name:Tags[?Key=='Name']|[0].Value,InstanceId:InstanceId,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,LaunchTime:LaunchTime}" \
+              --query "Reservations[].Instances[].{Name:Tags[?Key=='Name']|[0].Value,InstanceId:InstanceId,LaunchTime:LaunchTime,PublicIp:PublicIpAddress}" \
               --output table
             exit 1
           fi
 
-          INSTANCE_ID="${INSTANCE_IDS}"
-          echo "TARGET_TAG_NAME=${TAG_NAME}" >> "$GITHUB_ENV"
-          echo "INSTANCE_ID=${INSTANCE_ID}" >> "$GITHUB_ENV"
-          aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
-            --query "Reservations[].Instances[].{Name:Tags[?Key=='Name']|[0].Value,InstanceId:InstanceId,State:State.Name,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,LaunchTime:LaunchTime}" \
+          echo "INSTANCE_ID=${INSTANCE_IDS}" >> "$GITHUB_ENV"
+          aws ec2 describe-instances --instance-ids "$INSTANCE_IDS" \
+            --query "Reservations[].Instances[].{Name:Tags[?Key=='Name']|[0].Value,InstanceId:InstanceId,State:State.Name,PublicIp:PublicIpAddress,LaunchTime:LaunchTime}" \
             --output table
 
-      - name: SSM 상태 확인
+      - name: PingStatus 체크
         shell: bash
         run: |
           set -euo pipefail
+
           PING_STATUS=$(aws ssm describe-instance-information \
             --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
             --query "InstanceInformationList[0].PingStatus" \
             --output text || true)
 
+          echo "PingStatus=${PING_STATUS}"
           if [ "${PING_STATUS}" != "Online" ]; then
-            echo "SSM PingStatus가 Online이 아닙니다: ${PING_STATUS}"
-            echo "인스턴스가 SSM에 등록/온라인이 아니면 send-command는 대기만 하거나 실패합니다."
+            echo "SSM Offline"
             exit 1
           fi
 
-      - name: 이전 InProgress 명령 정리
+      - name: SSM 명령 전송 (초경량)
         shell: bash
         run: |
           set -euo pipefail
-          IDS=$(aws ssm list-command-invocations \
-            --details \
-            --query "CommandInvocations[?InstanceId=='${INSTANCE_ID}' && Status=='InProgress'].CommandId" \
-            --output text || true)
-
-          if [ -n "${IDS:-}" ] && [ "${IDS}" != "None" ]; then
-            echo "정리 대상 InProgress: ${IDS}"
-            for OLD_ID in $IDS; do
-              aws ssm cancel-command --command-id "$OLD_ID" >/dev/null 2>&1 || true
-            done
-          else
-            echo "정리할 InProgress 명령 없음"
-          fi
-
-      - name: SSM 배포 실행
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          IMAGE="ghcr.io/${{ needs.buildImageAndPush.outputs.owner_lc }}/${{ needs.buildImageAndPush.outputs.image_name }}:latest"
-          ENV_B64="$(printf '%s' '${{ secrets.WALKINGMATE_ENV }}' | base64 -w 0)"
-          DEPLOY_COMMENT="WalkingMate Deploy tag=${TARGET_TAG_NAME} run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-
-          jq -n '{
-            commands: [
-              "set -euo pipefail",
-              "echo WM_STEP_01_BOOT_CHECK",
-              "if [ ! -f /var/lib/cloud/instance/boot-finished ]; then echo WM_FAIL_BOOT_NOT_FINISHED; exit 11; fi",
-              "echo WM_STEP_02_DOCKER_CHECK",
-              "command -v docker >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_NOT_FOUND; exit 12; }",
-              "timeout 20 docker info >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_DAEMON_NOT_READY; exit 13; }",
-              "echo WM_STEP_03_SMOKE_CONTAINER",
-              "docker rm -f walkingmate_app >/dev/null 2>&1 || true",
-              "timeout 30 docker run -d --name walkingmate_app --restart unless-stopped -p 18080:80 nginx:alpine",
-              "echo WM_STEP_04_HEALTHCHECK",
-              "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/ >/dev/null && { echo WM_OK_SMOKE; exit 0; }; sleep 2; done; echo WM_FAIL_SMOKE; docker logs --tail=200 walkingmate_app || true; exit 14"
-            ]
-          }' > ssm-params.json
-
-          echo "----- ssm-params.json (sanitized) -----"
-          # 토큰/환경값은 노출되면 안되니 commands만 보여줌(디버깅용)
-          jq '{commands:.commands}' ssm-params.json
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
-            --comment "$DEPLOY_COMMENT" \
-            --timeout-seconds 300 \
-            --parameters file://ssm-params.json \
+            --comment "WalkingMate SSM Check run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --timeout-seconds 60 \
+            --parameters commands='["set -euo pipefail","echo WM_SSM_CHECK_START","date","uname -a","echo WM_SSM_CHECK_OK"]' \
             --query "Command.CommandId" \
             --output text)
 
           echo "COMMAND_ID=${COMMAND_ID}" >> "$GITHUB_ENV"
           echo "SSM CommandId=${COMMAND_ID}"
 
-      - name: SSM 완료 대기
+      - name: SSM 결과 확인
         shell: bash
         run: |
           set -euo pipefail
 
-          # send-command 직후에는 invocation이 아직 생성되지 않아 InvocationDoesNotExist가 뜰 수 있어서
-          # 조금 기다렸다가 폴링 시작
-          sleep 5
-
-          for i in $(seq 1 60); do
+          sleep 3
+          for i in $(seq 1 24); do
             OUT=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id "$INSTANCE_ID" \
               --output json 2>&1) || {
-                echo "get-command-invocation error: $OUT (${i}/60)"
+                echo "get-command-invocation error: $OUT (${i}/24)"
                 sleep 5
                 continue
               }
 
             STATUS=$(echo "$OUT" | jq -r '.Status // empty')
-            echo "SSM 실행 중... 상태=${STATUS:-Unknown} (${i}/60)"
+            echo "상태=${STATUS:-Unknown} (${i}/24)"
 
             case "$STATUS" in
               Success)
-                echo "SSM 배포 성공"
+                echo "SSM 체크 성공"
                 echo "----- STDOUT -----"
                 echo "$OUT" | jq -r '.StandardOutputContent // ""'
                 exit 0
                 ;;
-              Pending|InProgress|Delayed)
+              Pending|InProgress|Delayed|"")
                 sleep 5
                 ;;
               Failed|TimedOut|Cancelled|Cancelling)
-                echo "SSM 배포 실패 상태=$STATUS"
+                echo "SSM 체크 실패 상태=$STATUS"
                 echo "----- STDOUT -----"
                 echo "$OUT" | jq -r '.StandardOutputContent // ""'
                 echo "----- STDERR -----"
@@ -234,20 +130,13 @@ jobs:
                 exit 1
                 ;;
               *)
-                echo "알 수 없는 SSM 상태=$STATUS"
-                echo "----- RAW -----"
+                echo "알 수 없는 상태=$STATUS"
                 echo "$OUT"
                 sleep 5
                 ;;
             esac
           done
 
-          echo "SSM 배포 타임아웃: 명령 취소"
+          echo "SSM 체크 타임아웃"
           aws ssm cancel-command --command-id "$COMMAND_ID" >/dev/null 2>&1 || true
-          echo "----- SSM INVOCATION SUMMARY -----"
-          aws ssm list-command-invocations \
-            --details \
-            --command-id "$COMMAND_ID" \
-            --query "CommandInvocations[].{Status:Status,StatusDetails:StatusDetails,InstanceId:InstanceId,RequestedDateTime:RequestedDateTime}" \
-            --output table || true
           exit 1
