@@ -126,12 +126,12 @@ locals {
 #!/bin/bash
 set -euo pipefail
 
-dnf update -y
 dnf install -y docker git amazon-ssm-agent ec2-instance-connect
 systemctl enable --now docker
 systemctl enable --now amazon-ssm-agent
 
 mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp /opt/walkingmate/haproxy /opt/walkingmate/mysql_data
+mkdir -p /opt/walkingmate/npm_data /opt/walkingmate/npm_letsencrypt /opt/walkingmate/redis_data
 chown -R ec2-user:ec2-user /opt/walkingmate
 docker network create common >/dev/null 2>&1 || true
 
@@ -139,6 +139,32 @@ MYSQL_ROOT_PASSWORD='${var.mysql_root_password}'
 MYSQL_DATABASE_INIT='${var.mysql_database_init}'
 MYSQL_USER_INIT='${var.mysql_user_init}'
 MYSQL_PASSWORD_INIT='${var.mysql_password_init}'
+
+if ! docker ps -a --format '{{.Names}}' | grep -Fxq walkingmate_npm; then
+  docker run -d \
+    --name walkingmate_npm \
+    --restart unless-stopped \
+    --network common \
+    -p 80:80 \
+    -p 443:443 \
+    -p 81:81 \
+    -v /opt/walkingmate/npm_data:/data \
+    -v /opt/walkingmate/npm_letsencrypt:/etc/letsencrypt \
+    jc21/nginx-proxy-manager:latest
+else
+  docker start walkingmate_npm >/dev/null 2>&1 || true
+fi
+
+if ! docker ps -a --format '{{.Names}}' | grep -Fxq walkingmate_redis; then
+  docker run -d \
+    --name walkingmate_redis \
+    --restart unless-stopped \
+    --network common \
+    -v /opt/walkingmate/redis_data:/data \
+    redis:7-alpine
+else
+  docker start walkingmate_redis >/dev/null 2>&1 || true
+fi
 
 if ! docker ps -a --format '{{.Names}}' | grep -Fxq walkingmate_mysql; then
   docker run -d \
@@ -153,11 +179,6 @@ if ! docker ps -a --format '{{.Names}}' | grep -Fxq walkingmate_mysql; then
     mysql:8.4
 else
   docker start walkingmate_mysql >/dev/null 2>&1 || true
-fi
-
-if [ ! -x /usr/local/bin/docker-compose ]; then
-  curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
-  chmod +x /usr/local/bin/docker-compose
 fi
 EOT
 }
@@ -181,4 +202,3 @@ resource "aws_instance" "server" {
     Name = "walkingmate-ec2"
   }
 }
-
