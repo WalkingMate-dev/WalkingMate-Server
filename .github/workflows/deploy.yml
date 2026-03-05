@@ -147,27 +147,30 @@ jobs:
           IMAGE="ghcr.io/${{ needs.buildImageAndPush.outputs.owner_lc }}/${{ needs.buildImageAndPush.outputs.image_name }}:latest"
           ENV_B64="$(printf '%s' '${{ secrets.WALKINGMATE_ENV }}' | base64 -w 0)"
 
-          cat > ssm-params.json <<EOF
-          {
-            "commands": [
-              "set -euo pipefail",
-              "if [ ! -f /var/lib/cloud/instance/boot-finished ]; then echo cloud-init 미완료; exit 1; fi",
-              "command -v docker >/dev/null 2>&1 || { echo docker 미설치; exit 1; }",
-              "docker info >/dev/null 2>&1 || { echo docker daemon 미준비; exit 1; }",
-              "mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp",
-              "printf '%s' '${ENV_B64}' | base64 -d > /opt/walkingmate/.env.raw",
-              "sed -e 's/\\r$//' -e 's/^[[:space:]]*//' /opt/walkingmate/.env.raw > /opt/walkingmate/.env",
-              "rm -f /opt/walkingmate/.env.raw",
-              "docker network create common >/dev/null 2>&1 || true",
-              "echo '${{ secrets.GHCR_TOKEN }}' | docker login ghcr.io -u '${{ secrets.GHCR_USERNAME }}' --password-stdin",
-              "docker pull ${IMAGE}",
-              "docker stop walkingmate_app >/dev/null 2>&1 || true",
-              "docker rm walkingmate_app >/dev/null 2>&1 || true",
-              "docker run -d --name walkingmate_app --restart unless-stopped --network common --env-file /opt/walkingmate/.env -p 18080:18080 -v /opt/walkingmate/Data:/app/Data -v /opt/walkingmate/temp:/app/temp ${IMAGE}",
-              "for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/health >/dev/null && exit 0; sleep 2; done; echo 헬스체크 실패; docker logs --tail=200 walkingmate_app || true; exit 1"
-            ]
-          }
-          EOF
+          jq -n \
+            --arg env_b64 "$ENV_B64" \
+            --arg image "$IMAGE" \
+            --arg ghcr_user "${{ secrets.GHCR_USERNAME }}" \
+            --arg ghcr_token "${{ secrets.GHCR_TOKEN }}" \
+            '{
+              commands: [
+                "set -euo pipefail",
+                "if [ ! -f /var/lib/cloud/instance/boot-finished ]; then echo cloud-init 미완료; exit 1; fi",
+                "command -v docker >/dev/null 2>&1 || { echo docker 미설치; exit 1; }",
+                "docker info >/dev/null 2>&1 || { echo docker daemon 미준비; exit 1; }",
+                "mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp",
+                ("printf %s " + $env_b64 + " | base64 -d > /opt/walkingmate/.env.raw"),
+                "sed -e '\''s/\\r$//'\'' -e '\''s/^[[:space:]]*//'\'' /opt/walkingmate/.env.raw > /opt/walkingmate/.env",
+                "rm -f /opt/walkingmate/.env.raw",
+                "docker network create common >/dev/null 2>&1 || true",
+                ("echo \"" + $ghcr_token + "\" | docker login ghcr.io -u \"" + $ghcr_user + "\" --password-stdin"),
+                ("docker pull " + $image),
+                "docker stop walkingmate_app >/dev/null 2>&1 || true",
+                "docker rm walkingmate_app >/dev/null 2>&1 || true",
+                ("docker run -d --name walkingmate_app --restart unless-stopped --network common --env-file /opt/walkingmate/.env -p 18080:18080 -v /opt/walkingmate/Data:/app/Data -v /opt/walkingmate/temp:/app/temp " + $image),
+                "for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/health >/dev/null && exit 0; sleep 2; done; echo 헬스체크 실패; docker logs --tail=200 walkingmate_app || true; exit 1"
+              ]
+            }' > ssm-params.json
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
