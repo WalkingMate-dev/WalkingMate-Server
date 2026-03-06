@@ -13,9 +13,13 @@ import numpy as np
 import pandas as pd
 from werkzeug.utils import secure_filename
 
-from music_server.config import FEATURES_FILE, FEATURE_COLUMNS, TEMP_FOLDER
-from music_server.services.db import save_upload_record
-from music_server.services.runtime_infra import features_file_lock
+from music_server.config import FEATURE_COLUMNS, TEMP_FOLDER
+from music_server.services.db import (
+    find_song_feature_by_source_hash,
+    get_next_upload_filename,
+    save_upload_record,
+    upsert_song_feature,
+)
 
 
 # numba 데코레이터 no-op 대체
@@ -158,24 +162,6 @@ def extract_features(file_path):
     ])
 
 
-# 특징 CSV 읽기 및 누락 컬럼 보정
-def _read_features_df():
-    try:
-        df = pd.read_csv(FEATURES_FILE)
-    except FileNotFoundError:
-        df = pd.DataFrame(columns=['filename', 'length', 'label'] + FEATURE_COLUMNS)
-    if 'source_hash' not in df.columns:
-        df['source_hash'] = np.nan
-    return df
-
-
-# 임시 파일 경유 특징 CSV 원자적 갱신
-def _atomic_write_features(df):
-    tmp_path = FEATURES_FILE + '.tmp'
-    df.to_csv(tmp_path, index=False)
-    os.replace(tmp_path, FEATURES_FILE)
-
-
 # 업로드 파일 임시 폴더 저장
 def save_upload_to_temp(file_storage):
     if file_storage is None:
@@ -191,7 +177,7 @@ def save_upload_to_temp(file_storage):
     return file_path, None, 200
 
 
-# 파일 해시 중복 검사 및 특징 추출/CSV 저장
+# 파일 해시 중복 검사 및 특징 추출/DB 저장
 def process_uploaded_file(file_path, cleanup=True):
     file_hash = None
     try:
@@ -210,29 +196,19 @@ def process_uploaded_file(file_path, cleanup=True):
         }, 400
 
     try:
-        with features_file_lock():
-            existing_df = _read_features_df()
+        existing_filename = find_song_feature_by_source_hash(file_hash)
+        if existing_filename:
+            save_upload_record(file_hash, existing_filename, True, 'duplicate')
+            return {
+                'message': '중복 업로드가 감지되었습니다',
+                'filename': existing_filename,
+                'duplicate': True
+            }, 200
 
-            if file_hash:
-                duplicate_rows = existing_df[existing_df['source_hash'] == file_hash]
-                if not duplicate_rows.empty:
-                    existing_filename = str(duplicate_rows.iloc[0]['filename'])
-                    save_upload_record(file_hash, existing_filename, True, 'duplicate')
-                    return {
-                        'message': '중복 업로드가 감지되었습니다',
-                        'filename': existing_filename,
-                        'duplicate': True
-                    }, 200
-
-            next_filename = f'filename{len(existing_df) + 1}'
-            new_data = {'filename': next_filename, 'length': np.nan, 'label': np.nan, 'source_hash': file_hash}
-            for col, val in zip(FEATURE_COLUMNS, features):
-                new_data[col] = val
-
-            updated_df = pd.concat([existing_df, pd.DataFrame([new_data])], ignore_index=True)
-            _atomic_write_features(updated_df)
-            save_upload_record(file_hash, next_filename, False, 'saved')
-            return {'message': '파일 업로드 및 특징 추출이 완료되었습니다', 'filename': next_filename}, 200
+        next_filename = get_next_upload_filename()
+        upsert_song_feature(next_filename, file_hash, features)
+        save_upload_record(file_hash, next_filename, False, 'saved')
+        return {'message': '파일 업로드 및 특징 추출이 완료되었습니다', 'filename': next_filename}, 200
     except Exception as exc:
         save_upload_record(file_hash, None, False, 'storage_error')
         return {'error': f'특징 저장에 실패했습니다: {str(exc)}'}, 500
@@ -291,4 +267,3 @@ def process_upload_job(file_path):
             raise RuntimeError(f'{detail}\n{trace}')
         raise RuntimeError(detail)
     return payload
-

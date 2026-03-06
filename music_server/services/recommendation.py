@@ -1,21 +1,21 @@
-﻿import os
-
-import numpy as np
+﻿import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import scale
 
-from music_server.config import BPM_THRESHOLD1, BPM_THRESHOLD2, FEATURES_FILE, VALID_GENRES
-from music_server.services.runtime_infra import features_file_lock
+from music_server.config import BPM_THRESHOLD1, BPM_THRESHOLD2, VALID_GENRES
+from music_server.services.db import get_song_features_df
 from music_server.services.storage import get_available_music_filenames, resolve_music_file_path
 
 
-# 특징 CSV 기반 저/고 BPM 그룹 구성
+# song_features 기반 저/고 BPM 그룹 구성
 def get_bpm_groups():
     try:
-        with features_file_lock():
-            features_df = pd.read_csv(FEATURES_FILE)
+        features_df = get_song_features_df()
     except Exception:
+        return pd.DataFrame(), pd.DataFrame()
+
+    if features_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     features_df = features_df.dropna(subset=['filename', 'label', 'tempo', 'rms_mean'])
@@ -86,13 +86,15 @@ def pick_song_by_bpm_value(bpm_value):
 
 # 기준 곡 유사도 계산 후 상위 n개 반환
 def find_similar_songs(name, n=5):
-    with features_file_lock():
-        df_30 = pd.read_csv(FEATURES_FILE, index_col='filename')
+    df_30 = get_song_features_df()
+    if df_30.empty:
+        raise ValueError('특징 데이터가 비어 있습니다')
 
+    df_30 = df_30.set_index('filename')
     df_30 = df_30[~df_30.index.duplicated(keep='first')]
     df_30 = df_30.drop(columns=['harmony_mean', 'harmony_var', 'perceptr_mean', 'perceptr_var'], errors='ignore')
 
-    feature_df = df_30.drop(columns=['length', 'label'], errors='ignore')
+    feature_df = df_30.drop(columns=['length', 'label', 'feature_hash', 'source_hash'], errors='ignore')
 
     feature_df = feature_df.apply(pd.to_numeric, errors='coerce')
     feature_df = feature_df.replace([np.inf, -np.inf], np.nan)
@@ -213,4 +215,3 @@ def build_similarity_payload(result_df):
             'rhythm_similarity_percent': int(np.clip(float(rhythm_sim.get(idx, 0.0)) * 100.0, 0.0, 100.0))
         })
     return payload
-
