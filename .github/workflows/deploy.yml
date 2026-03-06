@@ -198,8 +198,8 @@ jobs:
                     ("docker run -d --name walkingmate_worker --restart unless-stopped --network common --env-file /opt/walkingmate/.env -v /opt/walkingmate/Data:/app/Data -v /opt/walkingmate/temp:/app/temp " + $image + " python run_worker.py"),
                     "for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/health >/dev/null && { echo WM_STAGE_APP_OK; break; }; sleep 2; done",
                     "curl -fsS http://127.0.0.1:18080/health >/dev/null || { echo WM_FAIL_APP_HEALTH; docker logs --tail=200 walkingmate_app || true; exit 15; }",
-                    "for i in $(seq 1 20); do docker logs --tail=80 walkingmate_worker 2>/dev/null | grep -q 'Listening on' && { echo WM_STAGE_WORKER_OK; break; }; sleep 2; done",
-                    "docker logs --tail=80 walkingmate_worker 2>/dev/null | grep -q 'Listening on' || { echo WM_FAIL_WORKER_NOT_READY; docker logs --tail=200 walkingmate_worker || true; exit 16; }"
+                    "for i in $(seq 1 20); do docker logs --tail=80 walkingmate_worker 2>/dev/null | grep -q music_tasks && { echo WM_STAGE_WORKER_OK; break; }; sleep 2; done",
+                    "docker logs --tail=80 walkingmate_worker 2>/dev/null | grep -q music_tasks || { echo WM_FAIL_WORKER_NOT_READY; docker logs --tail=200 walkingmate_worker || true; exit 16; }"
                   ]
                 }' > ssm-params.json
               ;;
@@ -270,3 +270,4 @@ jobs:
           echo "SSM 체크 타임아웃"
           aws ssm cancel-command --command-id "$COMMAND_ID" >/dev/null 2>&1 || true
           exit 1
+
