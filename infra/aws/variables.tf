@@ -1,4 +1,4 @@
-variable "project_name" {
+﻿variable "project_name" {
   description = "리소스 이름 접두사"
   type        = string
   default     = "walkingmate"
@@ -53,3 +53,9 @@ variable "mysql_password_init" {
   sensitive   = true
 }
 
+
+variable "mysql_ingress_cidrs" {
+  description = "MySQL 3306 인바운드 허용 CIDR 목록(필요 시에만 설정)"
+  type        = list(string)
+  default     = []
+}

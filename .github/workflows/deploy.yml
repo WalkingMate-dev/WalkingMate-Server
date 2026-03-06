@@ -1,4 +1,4 @@
-name: deploy-staged
+﻿name: deploy-staged
 
 on:
   push:
@@ -181,17 +181,25 @@ jobs:
                     "echo WM_STAGE_APP_START",
                     "command -v docker >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_NOT_FOUND; exit 12; }",
                     "docker info >/dev/null 2>&1 || { echo WM_FAIL_DOCKER_DAEMON_NOT_READY; exit 13; }",
-                    "mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp",
+                    "mkdir -p /opt/walkingmate /opt/walkingmate/Data /opt/walkingmate/temp /opt/walkingmate/mysql_data /opt/walkingmate/redis_data",
                     ("printf %s " + $env_b64 + " | base64 -d > /opt/walkingmate/.env.raw"),
                     "sed -e '\''s/\\r$//'\'' -e '\''s/^[[:space:]]*//'\'' /opt/walkingmate/.env.raw > /opt/walkingmate/.env",
                     "rm -f /opt/walkingmate/.env.raw",
                     "docker network create common >/dev/null 2>&1 || true",
                     ("echo \"" + $ghcr_token + "\" | docker login ghcr.io -u \"" + $ghcr_user + "\" --password-stdin"),
                     ("docker pull " + $image),
-                    "docker stop walkingmate_app >/dev/null 2>&1 || true",
-                    "docker rm walkingmate_app >/dev/null 2>&1 || true",
+                    "docker rm -f walkingmate_worker >/dev/null 2>&1 || true",
+                    "docker rm -f walkingmate_app >/dev/null 2>&1 || true",
+                    "docker rm -f walkingmate_redis >/dev/null 2>&1 || true",
+                    "docker rm -f walkingmate_mysql >/dev/null 2>&1 || true",
+                    "docker run -d --name walkingmate_redis --restart unless-stopped --network common -v /opt/walkingmate/redis_data:/data redis:7-alpine",
+                    "docker run -d --name walkingmate_mysql --restart unless-stopped --network common --env-file /opt/walkingmate/.env -p 3306:3306 -v /opt/walkingmate/mysql_data:/var/lib/mysql mysql:8.4",
                     ("docker run -d --name walkingmate_app --restart unless-stopped --network common --env-file /opt/walkingmate/.env -p 18080:18080 -v /opt/walkingmate/Data:/app/Data -v /opt/walkingmate/temp:/app/temp " + $image),
-                    "for i in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/health >/dev/null && { echo WM_STAGE_APP_OK; exit 0; }; sleep 2; done; echo WM_FAIL_APP_HEALTH; docker logs --tail=200 walkingmate_app || true; exit 15"
+                    ("docker run -d --name walkingmate_worker --restart unless-stopped --network common --env-file /opt/walkingmate/.env -v /opt/walkingmate/Data:/app/Data -v /opt/walkingmate/temp:/app/temp " + $image + " python run_worker.py"),
+                    "for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/health >/dev/null && { echo WM_STAGE_APP_OK; break; }; sleep 2; done",
+                    "curl -fsS http://127.0.0.1:18080/health >/dev/null || { echo WM_FAIL_APP_HEALTH; docker logs --tail=200 walkingmate_app || true; exit 15; }",
+                    "for i in $(seq 1 20); do docker logs --tail=80 walkingmate_worker 2>/dev/null | grep -q 'Listening on' && { echo WM_STAGE_WORKER_OK; break; }; sleep 2; done",
+                    "docker logs --tail=80 walkingmate_worker 2>/dev/null | grep -q 'Listening on' || { echo WM_FAIL_WORKER_NOT_READY; docker logs --tail=200 walkingmate_worker || true; exit 16; }"
                   ]
                 }' > ssm-params.json
               ;;
