@@ -1,9 +1,13 @@
-﻿import os
+import logging
+import os
+import uuid
 from typing import Optional
 
 import pandas as pd
 
 from music_server.config import FEATURE_COLUMNS
+
+logger = logging.getLogger(__name__)
 
 
 def _is_mysql_enabled():
@@ -34,7 +38,8 @@ def _get_pymysql():
     try:
         import pymysql
         return pymysql
-    except Exception:
+    except Exception as exc:
+        logger.warning('pymysql import 실패: %s', exc)
         return None
 
 
@@ -62,7 +67,8 @@ def _connect(cursor_dict: bool = False):
 
     try:
         return pymysql.connect(**kwargs)
-    except Exception:
+    except Exception as exc:
+        logger.warning('MySQL 연결 실패(cursor_dict=%s): %s', cursor_dict, exc)
         return None
 
 
@@ -95,6 +101,7 @@ def init_mysql_schema():
 
     conn = _connect(cursor_dict=False)
     if conn is None:
+        logger.warning('스키마 초기화 건너뜀: MySQL 연결 실패')
         return
 
     try:
@@ -121,6 +128,7 @@ def init_mysql_schema():
                 """
             )
     except Exception:
+        logger.exception('MySQL 스키마 초기화 실패')
         return
     finally:
         conn.close()
@@ -134,6 +142,7 @@ def save_upload_record(source_hash, stored_filename, duplicate, status):
 
     conn = _connect(cursor_dict=False)
     if conn is None:
+        logger.warning('업로드 이력 저장 건너뜀: MySQL 연결 실패(status=%s)', status)
         return
 
     try:
@@ -146,6 +155,7 @@ def save_upload_record(source_hash, stored_filename, duplicate, status):
                 (source_hash, stored_filename, int(bool(duplicate)), status),
             )
     except Exception:
+        logger.exception('업로드 이력 저장 실패(status=%s, duplicate=%s)', status, bool(duplicate))
         return
     finally:
         conn.close()
@@ -168,31 +178,15 @@ def find_song_feature_by_source_hash(source_hash: Optional[str]) -> Optional[str
             row = cur.fetchone()
             return row['filename'] if row else None
     except Exception:
+        logger.exception('source_hash 기반 조회 실패')
         return None
     finally:
         conn.close()
 
 
 def get_next_upload_filename() -> str:
-    conn = _connect(cursor_dict=False)
-    if conn is None:
-        return 'filename1'
-
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT COALESCE(MAX(CAST(SUBSTRING(filename, 9) AS UNSIGNED)), 0)
-                FROM song_features
-                WHERE filename REGEXP '^filename[0-9]+$'
-                """
-            )
-            max_id = cur.fetchone()[0] or 0
-            return f'filename{int(max_id) + 1}'
-    except Exception:
-        return 'filename1'
-    finally:
-        conn.close()
+    # MAX+1 패턴은 동시 업로드 시 동일 이름을 만들 수 있어 UUID 기반으로 생성한다.
+    return f"filename_{uuid.uuid4().hex}"
 
 
 def upsert_song_feature(filename: str, source_hash: Optional[str], features):
@@ -240,6 +234,7 @@ def get_song_features_df() -> pd.DataFrame:
             return pd.DataFrame(columns=columns)
         return pd.DataFrame(rows, columns=columns)
     except Exception:
+        logger.exception('song_features 조회 실패')
         return pd.DataFrame(columns=columns)
     finally:
         conn.close()
